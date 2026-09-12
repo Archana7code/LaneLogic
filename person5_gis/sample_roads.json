@@ -1,0 +1,50 @@
+[
+  {
+    "id": "ROAD_001",
+    "name": "Demo Stretch - Sector 12 Market Road",
+    "latitude": 28.6139,
+    "longitude": 77.2090,
+    "polygon_geojson": {
+      "type": "Polygon",
+      "coordinates": [[
+        [77.2085, 28.6135],
+        [77.2095, 28.6135],
+        [77.2095, 28.6143],
+        [77.2085, 28.6143],
+        [77.2085, 28.6135]
+      ]]
+    }
+  },
+  {
+    "id": "ROAD_002",
+    "name": "Demo Stretch - School Zone Lane",
+    "latitude": 28.6205,
+    "longitude": 77.2150,
+    "polygon_geojson": {
+      "type": "Polygon",
+      "coordinates": [[
+        [77.2145, 28.6201],
+        [77.2155, 28.6201],
+        [77.2155, 28.6209],
+        [77.2145, 28.6209],
+        [77.2145, 28.6201]
+      ]]
+    }
+  },
+  {
+    "id": "ROAD_003",
+    "name": "Demo Stretch - Junction Approach Road",
+    "latitude": 28.6100,
+    "longitude": 77.2300,
+    "polygon_geojson": {
+      "type": "Polygon",
+      "coordinates": [[
+        [77.2295, 28.6096],
+        [77.2305, 28.6096],
+        [77.2305, 28.6104],
+        [77.2295, 28.6104],
+        [77.2295, 28.6096]
+      ]]
+    }
+  }
+]

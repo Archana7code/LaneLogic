@@ -1,0 +1,40 @@
+
+
+
+
+
+
+{
+  "road_id": "ROAD_001",
+  "road_name": "Traffic 1",
+
+  "frame_width": 960,
+  "frame_height": 540,
+
+  "road_polygon": [
+    [40, 480],
+    [920, 480],
+    [860, 120],
+    [140, 120]
+  ],
+
+  "signal_queue_zone": {
+    "comment": "Vehicles stopped inside this zone are treated as signal/queue waiting, not parked.",
+    "polygon": [
+      [350, 150],
+      [650, 150],
+      [650, 260],
+      [350, 260]
+    ]
+  },
+
+  "school_zone_active_hours": {
+    "comment": "Used by the school-drop-off cause rule.",
+    "start": "07:30",
+    "end": "09:00"
+  },
+
+  "road_length_meters": 120,
+  "road_width_meters": 10,
+  "lane_count": 3
+}
