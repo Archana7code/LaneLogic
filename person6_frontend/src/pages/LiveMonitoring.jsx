@@ -38,9 +38,11 @@ export default function LiveMonitoring() {
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-medium text-slate-800">{road.name}</h3>
               <span
-                className={`text-xs font-semibold px-2 py-1 rounded-full ${STATUS_STYLES[road.current_status]}`}
+                className={`text-xs font-semibold px-2 py-1 rounded-full ${
+      road.is_chronic ? "bg-red-100 text-red-800" : STATUS_STYLES[road.current_status]
+    }`}
               >
-                {road.current_status}
+                {road.is_chronic ? "chronic" : road.current_status}
               </span>
             </div>
             <p className="text-sm text-slate-600">Occupancy: {road.current_occupancy_pct}%</p>

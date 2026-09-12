@@ -1068,7 +1068,7 @@ def main():
 
     parser.add_argument(
         "--output",
-        default="output/vehicle_data.json",
+        default="output/detections.json",
         help="JSON output path"
     )
 
