@@ -906,12 +906,46 @@ def list_chronic_zones(
 # PERSON 4 - RECOMMENDATIONS
 # ============================================================
 
+# @app.post("/recommendations/bulk")
+# def ingest_recommendations(
+#     recs: List[schemas.RecommendationIn],
+#     db: Session = Depends(get_db)
+# ):
+
+#     rows = [
+#         models.Recommendation(
+#             **recommendation.model_dump()
+#         )
+#         for recommendation in recs
+#     ]
+
+#     db.add_all(rows)
+
+#     db.commit()
+
+#     return {
+#         "inserted": len(rows)
+#     }
+
 @app.post("/recommendations/bulk")
 def ingest_recommendations(
     recs: List[schemas.RecommendationIn],
     db: Session = Depends(get_db)
 ):
+    if not recs:
+        return {"deleted": 0, "inserted": 0}
 
+    # Roads included in the latest recommendation run
+    road_ids = list(set(r.road_id for r in recs))
+
+    # Delete previous recommendations for these roads
+    deleted = (
+        db.query(models.Recommendation)
+        .filter(models.Recommendation.road_id.in_(road_ids))
+        .delete(synchronize_session=False)
+    )
+
+    # Insert only the latest recommendations
     rows = [
         models.Recommendation(
             **recommendation.model_dump()
@@ -920,11 +954,11 @@ def ingest_recommendations(
     ]
 
     db.add_all(rows)
-
     db.commit()
 
     return {
-        "inserted": len(rows)
+        "deleted_previous": deleted,
+        "inserted_latest": len(rows)
     }
 
 

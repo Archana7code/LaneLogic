@@ -711,14 +711,27 @@ def classify_cause(
             "still moving; likely slow-moving congestion."
         )
 
+        # --------------------------------------------------------
+    # Single parked vehicle / unclear obstruction
+    # --------------------------------------------------------
+
+    if len(outside_queue_parked) >= 1:
+        return (
+            "illegal_parking",
+            f"{len(outside_queue_parked)} vehicle(s) marked as parked "
+            f"outside the signal/queue zone. Further verification "
+            f"is recommended."
+        )
+
     # --------------------------------------------------------
     # Elevated but unclear
     # --------------------------------------------------------
 
     return (
         "unclassified",
-        "Road-space occupancy is elevated, but no specific "
-        "cause rule matched confidently."
+        "Road-space occupancy is elevated, but the available "
+        "vehicle states and configured zones do not identify "
+        "a specific cause."
     )
 
 

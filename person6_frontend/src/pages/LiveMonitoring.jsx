@@ -2,19 +2,12 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, WifiOff } from "lucide-react";
 import { api } from "../api";
 import StatusDot from "../components/StatusDot";
+import { getRoadName } from "../utils/roadNames";
 
 const BORDER_BY_STATUS = {
   normal: "border-l-signal-green",
   moderate: "border-l-signal-yellow",
   severe: "border-l-signal-red",
-};
-
-// Display names for each demo road
-const ROAD_NAMES = {
-  ROAD_001: "Noida",
-  ROAD_002: "Delhi",
-  ROAD_003: "Ghaziabad",
-  ROAD_004: "Faridabad",
 };
 
 export default function LiveMonitoring() {
@@ -67,22 +60,10 @@ export default function LiveMonitoring() {
     : 0;
 
   function getRoadDisplayName(road) {
-    const backendRoadId =
-      road.road_id ||
-      road.roadId ||
-      road.name ||
-      road.id;
+  const roadId = road.road_id || road.roadId || road.id;
 
-    return (
-      ROAD_NAMES[backendRoadId] ||
-      road.name ||
-      road.road_id ||
-      road.roadId ||
-      road.id ||
-      "Unknown road"
-    );
-  }
-
+  return getRoadName(roadId, road.name);
+}
   return (
     <div>
       {error && (

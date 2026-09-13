@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Legend } from "recharts";
 import { api } from "../api";
+import { getRoadName } from "../utils/roadNames";
 
 export default function ProblemAnalysis() {
   const [roads, setRoads] = useState([]);
@@ -38,7 +39,7 @@ export default function ProblemAnalysis() {
         >
           {roads.map((r) => (
             <option key={r.id} value={r.id}>
-              {r.name}
+              {getRoadName(r.id, r.name)}
             </option>
           ))}
         </select>

@@ -53,23 +53,23 @@ BACKEND_URL_DEFAULT = "http://localhost:8000"
 
 # Minimum number of historical windows needed before a road can be
 # called "chronic" at all.
-MIN_WINDOWS_REQUIRED = 3
+MIN_WINDOWS_REQUIRED = 1 # change, org : 3
 
 # A road is chronic when at least this fraction of its historical
 # windows show a meaningful parked-vehicle problem.
-CHRONIC_WINDOW_FRACTION = 0.40
+CHRONIC_WINDOW_FRACTION = 0.00 # change , org : 0.40
 
 # A window counts as "meaningful blockage" only if BOTH the vehicle
 # count and the parked-space percentage clear these bars. Requiring
 # both prevents a single briefly-parked car from counting the same
 # as a genuine, space-consuming blockage.
 MIN_PARKED_VEHICLES_FOR_RECURRENCE = 1
-CHRONIC_MIN_PARKED_SPACE_PCT = 5.0
+CHRONIC_MIN_PARKED_SPACE_PCT = 0.0 # change , org : 5.0
 
 # Threshold for flagging a "current problem" recommendation even when
 # there isn't yet enough history to call the road chronic.
 CURRENT_PROBLEM_PARKED_VEHICLES = 1
-CURRENT_PROBLEM_MIN_PARKED_SPACE_PCT = 3.0
+CURRENT_PROBLEM_MIN_PARKED_SPACE_PCT = 0.0 # change, org : 3.0
 
 
 # ============================================================
@@ -220,10 +220,12 @@ def analyse_road(road_id, observations):
         else 0.0
     )
 
-    chronic = (
-        total_windows >= MIN_WINDOWS_REQUIRED
-        and recurrence_fraction >= CHRONIC_WINDOW_FRACTION
-    )
+    # chronic = (
+    #     total_windows >= MIN_WINDOWS_REQUIRED
+    #     and recurrence_fraction >= CHRONIC_WINDOW_FRACTION
+    # )
+
+    chronic = parked_windows >= 1
 
     dominant_cause = (
         Counter(causes).most_common(1)[0][0] if causes else "normal"
