@@ -16,38 +16,53 @@ export default function History() {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold text-slate-800 mb-4">History / Chronic Problem Zones</h2>
-
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-md overflow-hidden shadow-panel">
         <table className="w-full text-sm">
-          <thead className="bg-slate-100 text-slate-600">
+          <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
             <tr>
-              <th className="text-left px-3 py-2">Road</th>
-              <th className="text-left px-3 py-2">Dominant Cause</th>
-              <th className="text-left px-3 py-2">Occurrences</th>
-              <th className="text-left px-3 py-2">Severity Score</th>
-              <th className="text-left px-3 py-2">Notes</th>
+              <th className="text-left px-3 py-2.5 font-medium">Road</th>
+              <th className="text-left px-3 py-2.5 font-medium">Dominant cause</th>
+              <th className="text-left px-3 py-2.5 font-medium">Occurrences</th>
+              <th className="text-left px-3 py-2.5 font-medium w-48">Severity</th>
+              <th className="text-left px-3 py-2.5 font-medium">Notes</th>
             </tr>
           </thead>
           <tbody>
             {zones.map((z) => (
-              <tr key={z.id} className="border-t border-slate-100">
-                <td className="px-3 py-2 font-medium">{roadsById[z.road_id]?.name || z.road_id}</td>
-                <td className="px-3 py-2">{z.dominant_cause}</td>
-                <td className="px-3 py-2">{z.occurrence_count}</td>
-                <td className="px-3 py-2">{z.severity_score}/100</td>
-                <td className="px-3 py-2 text-slate-500">{z.notes}</td>
+              <tr key={z.id} className="border-t border-slate-100 hover:bg-slate-50/70">
+                <td className="px-3 py-2.5 font-medium text-slate-800">
+                  {roadsById[z.road_id]?.name || z.road_id}
+                </td>
+                <td className="px-3 py-2.5 text-slate-600">{z.dominant_cause}</td>
+                <td className="px-3 py-2.5 font-mono text-slate-700">{z.occurrence_count}</td>
+                <td className="px-3 py-2.5">
+                  <SeverityBar score={z.severity_score} />
+                </td>
+                <td className="px-3 py-2.5 text-slate-500">{z.notes}</td>
               </tr>
             ))}
           </tbody>
         </table>
         {zones.length === 0 && (
           <p className="text-slate-500 text-sm p-4">
-            No chronic zones flagged yet. Run Person 4's recurrence script once enough
-            historical windows have been collected per road.
+            No chronic zones flagged yet. Run Person 4's recurrence script once enough historical windows have been
+            collected per road.
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+function SeverityBar({ score }) {
+  const pct = Math.min(Math.max(score || 0, 0), 100);
+  const color = pct >= 70 ? "bg-signal-red" : pct >= 40 ? "bg-signal-orange" : "bg-signal-yellow";
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 w-24 bg-slate-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="font-mono text-xs text-slate-600 tabular-nums">{score}/100</span>
     </div>
   );
 }

@@ -765,7 +765,7 @@ export default function MapView() {
             );
 
           const cause =
-            road.current_dominant_cause ||
+            road.current_cause ||
             "normal";
 
 
