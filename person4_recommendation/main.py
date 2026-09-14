@@ -79,36 +79,28 @@ CURRENT_PROBLEM_MIN_PARKED_SPACE_PCT = 0.0 # change, org : 3.0
 # ============================================================
 
 CAUSE_INTERVENTION_MAP = {
-    "illegal_parking": (
-        "Install no-parking signage and increase enforcement during peak hours.",
-        20,
-        1.0,
-    ),
-    "loading_unloading": (
-        "Create a designated loading/unloading zone with a time-window restriction.",
-        45,
-        1.0,
-    ),
-    "traffic_signal_queue": (
-        "Review signal timing and provide a clearly defined waiting lane near the junction.",
-        60,
-        0.9,
-    ),
-    "school_drop_off": (
-        "Create a dedicated pickup/drop-off zone; consider staggering school timing.",
-        50,
-        1.0,
-    ),
-    "general_congestion": (
-        "Review lane capacity and signal timing during peak hours.",
-        50,
-        0.9,
-    ),
-    "unclassified": (
-        "Inspect the location for recurring roadside obstruction before intervening.",
-        10,
-        0.4,
-    ),
+    "illegal_parking": [
+        ("Install no-parking signage and increase enforcement during peak hours.", 20, 1.0),
+        ("Create a designated parking bay to absorb existing demand.", 55, 1.15),
+    ],
+    "loading_unloading": [
+        ("Restrict loading to off-peak hours only.", 25, 0.85),
+        ("Create a designated loading/unloading zone with a time-window restriction.", 45, 1.1),
+    ],
+    "traffic_signal_queue": [
+        ("Review and adjust signal green-phase timing.", 40, 0.8),
+        ("Add a clearly marked waiting lane near the junction.", 60, 1.0),
+    ],
+    "school_drop_off": [
+        ("Stagger school opening/closing times to spread demand.", 30, 0.7),
+        ("Create a dedicated pickup/drop-off zone.", 50, 1.1),
+    ],
+    "general_congestion": [
+        ("Review lane capacity and signal timing during peak hours.", 50, 0.9),
+    ],
+    "unclassified": [
+        ("Inspect the location for recurring roadside obstruction before intervening.", 10, 0.4),
+    ],
 }
 
 
@@ -275,33 +267,38 @@ def get_current_problem(latest_observation):
 # RECOMMENDATION BUILDING (matches Person 3's RecommendationIn exactly)
 # ============================================================
 
-def build_recommendation(road_id, cause, severity_pct, rationale_detail):
+def build_recommendation_set(road_id, cause, severity_pct, rationale_detail):
     """
-    Build one recommendation dict matching schemas.RecommendationIn
-    exactly: road_id, cause, intervention, expected_benefit_score,
-    implementation_difficulty_score, priority_rank, rationale.
+    Build ALL candidate interventions for a cause, ranked by
+    benefit-to-difficulty ratio, highest value first.
     """
-    intervention, difficulty, benefit_weight = CAUSE_INTERVENTION_MAP.get(
-        cause, CAUSE_INTERVENTION_MAP["unclassified"]
-    )
+    candidates = CAUSE_INTERVENTION_MAP.get(cause, CAUSE_INTERVENTION_MAP["unclassified"])
 
-    expected_benefit = round(min(100.0, severity_pct * benefit_weight), 1)
+    scored = []
+    for intervention, difficulty, benefit_weight in candidates:
+        expected_benefit = round(min(100.0, severity_pct * benefit_weight), 1)
+        ranking_score = expected_benefit / max(1.0, difficulty)
+        scored.append({
+            "road_id": road_id,
+            "cause": cause,
+            "intervention": intervention,
+            "expected_benefit_score": expected_benefit,
+            "implementation_difficulty_score": float(difficulty),
+            "rationale": (
+                f"Cause '{cause}' observed with {severity_pct:.2f}% parked-space "
+                f"blockage. {rationale_detail} Recommendation is a rule-based "
+                f"suggestion, not a guaranteed real-world outcome."
+            ),
+            "_ranking_score": ranking_score,
+        })
 
-    rationale = (
-        f"Cause '{cause}' observed with {severity_pct:.2f}% parked-space "
-        f"blockage. {rationale_detail} Recommendation is a rule-based "
-        f"suggestion, not a guaranteed real-world outcome."
-    )
+    scored.sort(key=lambda r: r["_ranking_score"], reverse=True)
+    for i, r in enumerate(scored, start=1):
+        r["priority_rank"] = i
+        r.pop("_ranking_score")
 
-    return {
-        "road_id": road_id,
-        "cause": cause,
-        "intervention": intervention,
-        "expected_benefit_score": expected_benefit,
-        "implementation_difficulty_score": float(difficulty),
-        "priority_rank": 1,
-        "rationale": rationale,
-    }
+    return scored
+
 
 
 def build_chronic_zone_payload(analysis):
@@ -429,7 +426,7 @@ def main():
                 f"of {analysis['total_windows']} historical windows."
             )
             recommendations.append(
-                build_recommendation(
+                build_recommendation_set(
                     road_id,
                     analysis["dominant_cause"],
                     analysis["average_parked_space_pct"],
