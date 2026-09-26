@@ -129,3 +129,7 @@ analysis*.json
 # ============================================================
 
 .cache/
+
+person1_detection/Person1_SETUP.md
+
+commands.pdf
