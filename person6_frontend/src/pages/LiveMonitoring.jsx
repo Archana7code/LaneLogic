@@ -8,6 +8,7 @@ const BORDER_BY_STATUS = {
   normal: "border-l-signal-green",
   moderate: "border-l-signal-yellow",
   severe: "border-l-signal-red",
+  chronic: "border-l-signal-orange",
 };
 
 export default function LiveMonitoring() {
@@ -114,11 +115,14 @@ export default function LiveMonitoring() {
           ))}
 
         {!loading &&
-          roads.map((road) => (
+          roads.map((road) => {
+            const displayStatus = road.is_chronic ? "chronic" : road.current_status;
+
+            return (
             <div
               key={road.id || road.road_id}
               className={`bg-white border border-slate-200 border-l-4 ${
-                BORDER_BY_STATUS[road.current_status] ||
+                BORDER_BY_STATUS[displayStatus] ||
                 "border-l-slate-300"
               } rounded-md p-4 shadow-panel`}
             >
@@ -128,7 +132,7 @@ export default function LiveMonitoring() {
                 </h3>
 
                 <StatusDot
-                  status={road.current_status}
+                  status={displayStatus}
                   live={road.current_status === "severe"}
                 />
               </div>
@@ -175,7 +179,8 @@ export default function LiveMonitoring() {
                 </p>
               ) : null}
             </div>
-          ))}
+            );
+          })}
 
         {!loading && !error && roads.length === 0 && (
           <div className="col-span-full text-center py-14 border border-dashed border-slate-300 rounded-md">

@@ -2,12 +2,14 @@ const STATUS_COLOR = {
   normal: "bg-signal-green",
   moderate: "bg-signal-yellow",
   severe: "bg-signal-red",
+  chronic: "bg-signal-orange",
 };
 
 const STATUS_TEXT = {
   normal: "text-signal-green",
   moderate: "text-yellow-600",
   severe: "text-signal-red",
+  chronic: "text-signal-orange",
 };
 
 // A small pulsing dot + label, standing in for the pill badges you'd see
