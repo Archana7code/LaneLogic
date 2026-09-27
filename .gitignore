@@ -124,6 +124,9 @@ analysis*.json
 /detections.csv
 /analysis.json
 
+/analysis*.jsonl
+analysis*.jsonl
+
 # ============================================================
 # LOCAL CACHE
 # ============================================================
@@ -133,3 +136,8 @@ analysis*.json
 person1_detection/Person1_SETUP.md
 
 commands.pdf
+# ============================================================
+# DATASETS
+# ============================================================
+
+person1_detection/dataset/

@@ -267,6 +267,1056 @@
 
 
 
+# """
+# LaneLogic - PERSON 2: Space & Cause Analysis
+# =============================================
+
+# Role:
+#     Understand how much of the road is occupied/blocked and determine
+#     the most likely cause using transparent rule-based logic.
+
+# INPUT FROM PERSON 1:
+#     detections.json
+
+# Each detection contains:
+#     vehicle_id
+#     vehicle_type
+#     bbox
+#     position
+#     timestamp
+#     confidence
+#     movement_state
+
+# INPUT:
+#     roi_config.json
+
+# MAIN JOB:
+#     1. Load road ROI.
+#     2. Divide detections into time windows.
+#     3. Count unique vehicles.
+#     4. Calculate road occupancy.
+#     5. Calculate blocked road occupancy.
+#     6. Estimate occupied road area in square meters.
+#     7. Calculate space usage percentage.
+#     8. Assign severity / priority.
+#     9. Determine likely cause.
+#    10. Produce JSON for Person 3 backend.
+
+# IMPORTANT:
+#     Occupancy is calculated from vehicle bounding-box area inside
+#     the configured road polygon.
+
+#     Example:
+#         Road area = 20m x 120m = 2400m²
+#         Vehicle-covered area = 1200m²
+
+#         occupancy = 1200 / 2400 * 100
+#                   = 50%
+
+#     This is an APPROXIMATE road-space occupancy measure.
+#     Exact physical width in meters requires camera calibration/
+#     perspective transformation.
+# """
+
+# import argparse
+# import requests
+# import json
+# from collections import defaultdict
+# from datetime import datetime
+
+# from shapely.geometry import Polygon, Point
+# from shapely.geometry import box as shapely_box
+
+
+# # ============================================================
+# # DEFAULT SETTINGS
+# # ============================================================
+
+# DEFAULT_WINDOW_SECONDS = 2
+# BACKEND_URL = "http://localhost:8000"
+
+# # Occupancy / severity thresholds.
+# # These are transparent demo thresholds and can be tuned later.
+# LOW_OCCUPANCY_PCT = 20.0
+# MODERATE_OCCUPANCY_PCT = 40.0
+# HIGH_OCCUPANCY_PCT = 60.0
+# CRITICAL_OCCUPANCY_PCT = 80.0
+
+# # Blocked-space thresholds.
+# LOW_BLOCKED_PCT = 10.0
+# MODERATE_BLOCKED_PCT = 25.0
+# HIGH_BLOCKED_PCT = 40.0
+# CRITICAL_BLOCKED_PCT = 60.0
+
+
+# # ============================================================
+# # LOAD ROI CONFIG
+# # ============================================================
+
+# def load_roi(roi_path):
+#     with open(roi_path, "r", encoding="utf-8") as f:
+#         roi = json.load(f)
+
+#     # ----------------------------
+#     # Validate road polygon
+#     # ----------------------------
+#     if "road_polygon" not in roi:
+#         raise ValueError("roi_config.json must contain 'road_polygon'.")
+
+#     if len(roi["road_polygon"]) < 3:
+#         raise ValueError("road_polygon must contain at least 3 points.")
+
+#     road_polygon = Polygon(roi["road_polygon"])
+
+#     if not road_polygon.is_valid:
+#         road_polygon = road_polygon.buffer(0)
+
+#     if road_polygon.is_empty:
+#         raise ValueError("Invalid road_polygon.")
+
+#     roi["_road_polygon_shape"] = road_polygon
+
+#     # ----------------------------
+#     # Signal / queue zone
+#     # ----------------------------
+#     if roi.get("signal_queue_zone"):
+#         queue_polygon = Polygon(
+#             roi["signal_queue_zone"]["polygon"]
+#         )
+
+#         if not queue_polygon.is_valid:
+#             queue_polygon = queue_polygon.buffer(0)
+
+#         roi["_queue_zone_shape"] = queue_polygon
+#     else:
+#         roi["_queue_zone_shape"] = None
+
+#     return roi
+
+
+# # ============================================================
+# # LOAD PERSON 1 DETECTIONS
+# # ============================================================
+
+# def load_detections(detections_path):
+#     with open(detections_path, "r", encoding="utf-8") as f:
+#         data = json.load(f)
+
+#     if not isinstance(data, list):
+#         raise ValueError(
+#             "detections.json must contain a list of detection records."
+#         )
+
+#     return data
+
+
+# # ============================================================
+# # GROUP DETECTIONS INTO TIME WINDOWS
+# # ============================================================
+
+# def group_into_windows(records, window_seconds):
+#     windows = defaultdict(list)
+
+#     for record in records:
+#         timestamp = float(record.get("timestamp", 0.0))
+
+#         window_index = int(timestamp // window_seconds)
+
+#         windows[window_index].append(record)
+
+#     return dict(sorted(windows.items()))
+
+
+# # ============================================================
+# # VEHICLE AREA INSIDE ROAD ROI
+# # ============================================================
+
+# def vehicle_box_area_inside_roi(record, road_polygon):
+#     bbox = record.get("bbox")
+
+#     if not bbox or len(bbox) != 4:
+#         return 0.0
+
+#     x1, y1, x2, y2 = map(float, bbox)
+
+#     if x2 <= x1 or y2 <= y1:
+#         return 0.0
+
+#     vehicle_box = shapely_box(x1, y1, x2, y2)
+
+#     if not vehicle_box.is_valid or vehicle_box.area <= 0:
+#         return 0.0
+
+#     intersection = vehicle_box.intersection(road_polygon)
+
+#     if intersection.is_empty:
+#         return 0.0
+
+#     return float(intersection.area)
+
+
+# # ============================================================
+# # QUEUE ZONE CHECK
+# # ============================================================
+
+# def is_inside_queue_zone(record, queue_zone_shape):
+#     if queue_zone_shape is None:
+#         return False
+
+#     position = record.get("position")
+
+#     if not position or len(position) != 2:
+#         return False
+
+#     x, y = map(float, position)
+
+#     return queue_zone_shape.contains(Point(x, y))
+
+
+# # ============================================================
+# # SCHOOL HOURS
+# # ============================================================
+
+# def in_school_hours(clock_time_str, school_hours):
+#     if not clock_time_str or not school_hours:
+#         return False
+
+#     try:
+#         fmt = "%H:%M"
+
+#         current_time = datetime.strptime(
+#             clock_time_str,
+#             fmt
+#         ).time()
+
+#         start_time = datetime.strptime(
+#             school_hours["start"],
+#             fmt
+#         ).time()
+
+#         end_time = datetime.strptime(
+#             school_hours["end"],
+#             fmt
+#         ).time()
+
+#         return start_time <= current_time <= end_time
+
+#     except (ValueError, KeyError):
+#         return False
+
+
+# # ============================================================
+# # SEVERITY / PRIORITY
+# # ============================================================
+
+# def calculate_severity(occupancy_pct, blocked_pct):
+#     """
+#     Priority is based mainly on road-space occupancy.
+
+#     blocked_pct is also considered because stationary blockage
+#     is more problematic than normal moving traffic.
+#     """
+
+#     # Critical:
+#     # Very high overall occupancy OR very high blocked space.
+#     if (
+#         occupancy_pct >= CRITICAL_OCCUPANCY_PCT
+#         or blocked_pct >= CRITICAL_BLOCKED_PCT
+#     ):
+#         return "critical", 4
+
+#     # High:
+#     if (
+#         occupancy_pct >= HIGH_OCCUPANCY_PCT
+#         or blocked_pct >= HIGH_BLOCKED_PCT
+#     ):
+#         return "high", 3
+
+#     # Moderate:
+#     if (
+#         occupancy_pct >= MODERATE_OCCUPANCY_PCT
+#         or blocked_pct >= MODERATE_BLOCKED_PCT
+#     ):
+#         return "moderate", 2
+
+#     # Low:
+#     if (
+#         occupancy_pct >= LOW_OCCUPANCY_PCT
+#         or blocked_pct >= LOW_BLOCKED_PCT
+#     ):
+#         return "low", 1
+
+#     return "normal", 0
+
+
+# # ============================================================
+# # CAUSE CLASSIFICATION
+# # ============================================================
+
+# def classify_cause(
+#     window_records,
+#     roi,
+#     occupancy_pct,
+#     blocked_pct,
+#     wall_clock_time=None
+# ):
+#     """
+#     Explainable rule-based cause classifier.
+
+#     IMPORTANT:
+#         This is NOT an ML prediction.
+#         It is a transparent rule-based interpretation.
+#     """
+
+#     if occupancy_pct < LOW_OCCUPANCY_PCT:
+#         return (
+#             "normal",
+#             "Low road-space occupancy; no significant blockage detected."
+#         )
+
+#     # --------------------------------------------------------
+#     # Split vehicles by state
+#     # --------------------------------------------------------
+
+#     non_moving = [
+#         r
+#         for r in window_records
+#         if r.get("movement_state") != "moving"
+#     ]
+
+#     parked = [
+#         r
+#         for r in window_records
+#         if r.get("movement_state") == "parked"
+#     ]
+
+#     waiting = [
+#         r
+#         for r in window_records
+#         if r.get("movement_state") == "signal_waiting"
+#     ]
+
+#     # --------------------------------------------------------
+#     # Signal queue
+#     # --------------------------------------------------------
+
+#     queue_zone_shape = roi.get("_queue_zone_shape")
+
+#     in_queue = [
+#         r
+#         for r in non_moving
+#         if is_inside_queue_zone(
+#             r,
+#             queue_zone_shape
+#         )
+#     ]
+
+#     if (
+#         non_moving
+#         and len(in_queue) / len(non_moving) >= 0.60
+#     ):
+#         return (
+#             "traffic_signal_queue",
+#             f"{len(in_queue)} of {len(non_moving)} "
+#             f"stationary vehicles are inside the configured "
+#             f"signal/queue zone."
+#         )
+
+#     # --------------------------------------------------------
+#     # Parked vehicles outside queue zone
+#     # --------------------------------------------------------
+
+#     outside_queue_parked = [
+#         r
+#         for r in parked
+#         if not is_inside_queue_zone(
+#             r,
+#             queue_zone_shape
+#         )
+#     ]
+
+#     # --------------------------------------------------------
+#     # Loading / unloading
+#     # --------------------------------------------------------
+
+#     heavy_parked = [
+#         r
+#         for r in outside_queue_parked
+#         if r.get("vehicle_type") in ("truck", "bus")
+#     ]
+
+#     if (
+#         1 <= len(heavy_parked) <= 2
+#         and len(outside_queue_parked) <= 3
+#     ):
+#         return (
+#             "loading_unloading",
+#             f"{len(heavy_parked)} truck/bus vehicle(s) "
+#             f"parked outside the signal zone, consistent "
+#             f"with loading/unloading."
+#         )
+
+#     # --------------------------------------------------------
+#     # School drop-off
+#     # --------------------------------------------------------
+
+#     school_hours = roi.get(
+#         "school_zone_active_hours"
+#     )
+
+#     small_stopped = [
+#         r
+#         for r in (waiting + outside_queue_parked)
+#         if r.get("vehicle_type")
+#         in ("car", "motorcycle", "bicycle")
+#     ]
+
+#     if (
+#         wall_clock_time
+#         and in_school_hours(
+#             wall_clock_time,
+#             school_hours
+#         )
+#         and len(small_stopped) >= 3
+#     ):
+#         return (
+#             "school_drop_off",
+#             f"{len(small_stopped)} cars/two-wheelers "
+#             f"stopped during the configured school "
+#             f"drop-off period."
+#         )
+
+#     # --------------------------------------------------------
+#     # Illegal parking
+#     # --------------------------------------------------------
+
+#     if len(outside_queue_parked) >= 3:
+#         return (
+#             "illegal_parking",
+#             f"{len(outside_queue_parked)} vehicles parked "
+#             f"outside the signal/queue zone."
+#         )
+
+#     # --------------------------------------------------------
+#     # General congestion
+#     # --------------------------------------------------------
+
+#     if (
+#         blocked_pct < LOW_BLOCKED_PCT
+#         and occupancy_pct >= MODERATE_OCCUPANCY_PCT
+#     ):
+#         return (
+#             "general_congestion",
+#             "High road-space occupancy with most vehicles "
+#             "still moving; likely slow-moving congestion."
+#         )
+
+#         # --------------------------------------------------------
+#     # Single parked vehicle / unclear obstruction
+#     # --------------------------------------------------------
+
+#     if len(outside_queue_parked) >= 1:
+#         return (
+#             "illegal_parking",
+#             f"{len(outside_queue_parked)} vehicle(s) marked as parked "
+#             f"outside the signal/queue zone. Further verification "
+#             f"is recommended."
+#         )
+
+#     # --------------------------------------------------------
+#     # Elevated but unclear
+#     # --------------------------------------------------------
+
+#     return (
+#         "unclassified",
+#         "Road-space occupancy is elevated, but the available "
+#         "vehicle states and configured zones do not identify "
+#         "a specific cause."
+#     )
+
+
+# # ============================================================
+# # VEHICLE TYPE BREAKDOWN
+# # ============================================================
+
+# def type_breakdown(records):
+#     breakdown = defaultdict(int)
+
+#     for record in records:
+#         vehicle_type = record.get(
+#             "vehicle_type",
+#             "unknown"
+#         )
+
+#         breakdown[vehicle_type] += 1
+
+#     return dict(breakdown)
+
+
+# # ============================================================
+# # MOVEMENT STATE BREAKDOWN
+# # ============================================================
+
+# def state_breakdown(records):
+#     breakdown = {
+#         "moving": 0,
+#         "signal_waiting": 0,
+#         "parked": 0,
+#         "unknown": 0,
+#     }
+
+#     for record in records:
+#         state = record.get(
+#             "movement_state",
+#             "unknown"
+#         )
+
+#         if state not in breakdown:
+#             state = "unknown"
+
+#         breakdown[state] += 1
+
+#     return breakdown
+
+
+# # ============================================================
+# # MAIN ANALYSIS
+# # ============================================================
+
+# def analyze(
+#     detections,
+#     roi,
+#     window_seconds,
+#     road_id_override=None,
+#     road_name_override=None
+# ):
+#     windows = group_into_windows(
+#         detections,
+#         window_seconds
+#     )
+
+#     road_polygon = roi["_road_polygon_shape"]
+
+#     road_pixel_area = road_polygon.area
+
+#     if road_pixel_area <= 0:
+#         raise ValueError(
+#             "Road ROI area must be greater than zero."
+#         )
+
+#     # --------------------------------------------------------
+#     # Physical road dimensions
+#     # --------------------------------------------------------
+
+#     road_length_meters = float(
+#         roi.get("road_length_meters", 0)
+#     )
+
+#     road_width_meters = float(
+#         roi.get("road_width_meters", 0)
+#     )
+
+#     physical_road_area_m2 = (
+#         road_length_meters * road_width_meters
+#     )
+
+#     results = []
+
+#     # ========================================================
+#     # PROCESS EACH TIME WINDOW
+#     # ========================================================
+
+#     for window_index, records in windows.items():
+
+#         # ----------------------------------------------------
+#         # Keep only latest observation of each vehicle
+#         # ----------------------------------------------------
+
+#         latest_by_vehicle = {}
+
+#         for record in records:
+#             vehicle_id = record.get("vehicle_id")
+
+#             if vehicle_id is None:
+#                 continue
+
+#             old_record = latest_by_vehicle.get(
+#                 vehicle_id
+#             )
+
+#             if (
+#                 old_record is None
+#                 or float(record.get("timestamp", 0))
+#                 >= float(old_record.get("timestamp", 0))
+#             ):
+#                 latest_by_vehicle[vehicle_id] = record
+
+#         window_records = list(
+#             latest_by_vehicle.values()
+#         )
+
+#         # ----------------------------------------------------
+#         # Calculate total occupied vehicle area
+#         # ----------------------------------------------------
+
+#         total_vehicle_area_pixels = 0.0
+#         blocked_vehicle_area_pixels = 0.0
+
+#         for record in window_records:
+
+#             vehicle_area = (
+#                 vehicle_box_area_inside_roi(
+#                     record,
+#                     road_polygon
+#                 )
+#             )
+
+#             total_vehicle_area_pixels += vehicle_area
+
+#             if record.get("movement_state") == "parked":
+#                 blocked_vehicle_area_pixels += vehicle_area
+
+#         # ----------------------------------------------------
+#         # Overall road-space occupancy
+#         # ----------------------------------------------------
+
+#         occupancy_pct = 0.0
+
+#         if road_pixel_area > 0:
+#             occupancy_pct = (
+#                 100.0
+#                 * total_vehicle_area_pixels
+#                 / road_pixel_area
+#             )
+
+#         occupancy_pct = min(
+#             max(occupancy_pct, 0.0),
+#             100.0
+#         )
+
+#         # ----------------------------------------------------
+#         # Blocked road-space occupancy
+#         # ----------------------------------------------------
+
+#         blocked_pct = 0.0
+
+#         if road_pixel_area > 0:
+#             blocked_pct = (
+#                 100.0
+#                 * blocked_vehicle_area_pixels
+#                 / road_pixel_area
+#             )
+
+#         blocked_pct = min(
+#             max(blocked_pct, 0.0),
+#             100.0
+#         )
+
+#         occupancy_pct = round(
+#             occupancy_pct,
+#             2
+#         )
+
+#         blocked_pct = round(
+#             blocked_pct,
+#             2
+#         )
+
+#         # ----------------------------------------------------
+#         # Convert occupancy to approximate physical area
+#         # ----------------------------------------------------
+
+#         occupied_area_m2 = None
+#         blocked_area_m2 = None
+
+#         if physical_road_area_m2 > 0:
+
+#             occupied_area_m2 = round(
+#                 physical_road_area_m2
+#                 * occupancy_pct
+#                 / 100.0,
+#                 2
+#             )
+
+#             blocked_area_m2 = round(
+#                 physical_road_area_m2
+#                 * blocked_pct
+#                 / 100.0,
+#                 2
+#             )
+
+#         # ----------------------------------------------------
+#         # Approximate equivalent width occupied
+#         #
+#         # Example:
+#         # road width = 20m
+#         # occupancy = 50%
+#         #
+#         # equivalent width = 10m
+#         #
+#         # IMPORTANT:
+#         # This is an equivalent/normalized width, not a
+#         # perspective-correct physical measurement.
+#         # ----------------------------------------------------
+
+#         equivalent_occupied_width_m = None
+#         equivalent_blocked_width_m = None
+
+#         if road_width_meters > 0:
+
+#             equivalent_occupied_width_m = round(
+#                 road_width_meters
+#                 * occupancy_pct
+#                 / 100.0,
+#                 2
+#             )
+
+#             equivalent_blocked_width_m = round(
+#                 road_width_meters
+#                 * blocked_pct
+#                 / 100.0,
+#                 2
+#             )
+
+#         # ----------------------------------------------------
+#         # Severity / priority
+#         # ----------------------------------------------------
+
+#         severity, priority_score = calculate_severity(
+#             occupancy_pct,
+#             blocked_pct
+#         )
+
+#         # ----------------------------------------------------
+#         # Cause
+#         # ----------------------------------------------------
+
+#         cause, explanation = classify_cause(
+#             window_records,
+#             roi,
+#             occupancy_pct,
+#             blocked_pct,
+#             wall_clock_time=None
+#         )
+
+#         # ----------------------------------------------------
+#         # Final result
+#         # ----------------------------------------------------
+
+#         results.append(
+#             {
+#                 "road_id": (
+#                     road_id_override
+#                     or roi["road_id"]
+#                 ),
+
+#                 "road_name": (
+#                     road_name_override
+#                     or roi["road_name"]
+#                 ),
+
+#                 "window_index": window_index,
+
+#                 "window_start_seconds": (
+#                     window_index
+#                     * window_seconds
+#                 ),
+
+#                 "window_end_seconds": (
+#                     (window_index + 1)
+#                     * window_seconds
+#                 ),
+
+#                 # ----------------------------
+#                 # Vehicle information
+#                 # ----------------------------
+
+#                 "vehicle_count": len(
+#                     window_records
+#                 ),
+
+#                 "vehicle_type_breakdown":
+#                     type_breakdown(
+#                         window_records
+#                     ),
+
+#                 "movement_state_breakdown":
+#                     state_breakdown(
+#                         window_records
+#                     ),
+
+#                 # ----------------------------
+#                 # Space utilization
+#                 # ----------------------------
+
+#                 "road_length_meters":
+#                     road_length_meters,
+
+#                 "road_width_meters":
+#                     road_width_meters,
+
+#                 "road_area_m2":
+#                     round(
+#                         physical_road_area_m2,
+#                         2
+#                     )
+#                     if physical_road_area_m2 > 0
+#                     else None,
+
+#                 "occupancy_pct":
+#                     occupancy_pct,
+
+#                 "blocked_pct":
+#                     blocked_pct,
+
+#                 "occupied_area_m2":
+#                     occupied_area_m2,
+
+#                 "blocked_area_m2":
+#                     blocked_area_m2,
+
+#                 "equivalent_occupied_width_meters":
+#                     equivalent_occupied_width_m,
+
+#                 "equivalent_blocked_width_meters":
+#                     equivalent_blocked_width_m,
+
+#                 # ----------------------------
+#                 # Priority
+#                 # ----------------------------
+
+#                 "severity":
+#                     severity,
+
+#                 "priority_score":
+#                     priority_score,
+
+#                 # ----------------------------
+#                 # Cause
+#                 # ----------------------------
+
+#                 "cause":
+#                     cause,
+
+#                 "cause_explanation":
+#                     explanation,
+#             }
+#         )
+
+#     return results
+
+
+# # ============================================================
+# # COMMAND LINE
+# # ============================================================
+
+# def main():
+
+#     parser = argparse.ArgumentParser(
+#         description=(
+#             "LaneLogic Person 2 - "
+#             "Space & Cause Analysis"
+#         )
+#     )
+
+#     parser.add_argument(
+#         "--detections",
+#         default=(
+#             "../person1_detection/"
+#             "output/detections.json"
+#         ),
+#         help=(
+#             "Path to Person 1 detections.json"
+#         )
+#     )
+
+#     parser.add_argument(
+#         "--roi",
+#         default="roi_config.json",
+#         help="Path to roi_config.json"
+#     )
+
+#     parser.add_argument(
+#         "--output",
+#         default="analysis.json",
+#         help=(
+#             "Path to output analysis JSON"
+#         )
+#     )
+
+#     parser.add_argument(
+#         "--window-seconds",
+#         type=int,
+#         default=DEFAULT_WINDOW_SECONDS,
+#         help=(
+#             "Time window size in seconds"
+#         )
+#     )
+
+#     # --------------------------------------------------------
+#     # Road identity overrides
+#     # --------------------------------------------------------
+
+#     parser.add_argument(
+#         "--road-id",
+#         default=None,
+#         help=(
+#             "Override road ID, e.g. ROAD_001"
+#         )
+#     )
+
+#     parser.add_argument(
+#         "--road-name",
+#         default=None,
+#         help=(
+#             "Override road name, e.g. Traffic 1"
+#         )
+#     )
+
+#     args = parser.parse_args()
+
+#     # --------------------------------------------------------
+#     # Load input
+#     # --------------------------------------------------------
+
+#     roi = load_roi(
+#         args.roi
+#     )
+
+#     detections = load_detections(
+#         args.detections
+#     )
+
+#     # --------------------------------------------------------
+#     # Analyze
+#     # --------------------------------------------------------
+
+#     results = analyze(
+#         detections=detections,
+#         roi=roi,
+#         window_seconds=args.window_seconds,
+#         road_id_override=args.road_id,
+#         road_name_override=args.road_name
+#     )
+
+#     # --------------------------------------------------------
+#     # Save
+#     # --------------------------------------------------------
+
+#     with open(
+#         args.output,
+#         "w",
+#         encoding="utf-8"
+#     ) as f:
+
+#         json.dump(
+#             results,
+#             f,
+#             indent=2
+#         )
+
+#             # --------------------------------------------------------
+#     # Send analysis to Person 3 backend
+#     # --------------------------------------------------------
+
+#     try:
+#         response = requests.post(
+#             f"{BACKEND_URL}/analysis/bulk",
+#             json={"observations": results},
+#             timeout=10
+#         )
+
+#         if response.ok:
+#             print("✓ Analysis sent to Person 3 backend")
+#         else:
+#             print(
+#                 f"✗ Backend rejected analysis: "
+#                 f"{response.status_code}"
+#             )
+#             print(response.text)
+
+#     except requests.RequestException as e:
+#         print(
+#             f"✗ Could not connect to Person 3 backend: {e}"
+#         )
+
+#     # --------------------------------------------------------
+#     # Console summary
+#     # --------------------------------------------------------
+
+#     print()
+#     print("=" * 65)
+#     print("LANELOGIC - PERSON 2 ANALYSIS")
+#     print("=" * 65)
+
+#     print(
+#         f"Road ID   : "
+#         f"{args.road_id or roi['road_id']}"
+#     )
+
+#     print(
+#         f"Road Name : "
+#         f"{args.road_name or roi['road_name']}"
+#     )
+
+#     print(
+#         f"Detections: {len(detections)}"
+#     )
+
+#     print(
+#         f"Windows   : {len(results)}"
+#     )
+
+#     print(
+#         f"Output    : {args.output}"
+#     )
+
+#     print("-" * 65)
+
+#     for result in results[:10]:
+
+#         print(
+#             f"Window {result['window_index']:>3} | "
+#             f"Vehicles: {result['vehicle_count']:>2} | "
+#             f"Occupancy: "
+#             f"{result['occupancy_pct']:>6.2f}% | "
+#             f"Blocked: "
+#             f"{result['blocked_pct']:>6.2f}% | "
+#             f"Priority: "
+#             f"{result['severity']:<8} | "
+#             f"Cause: "
+#             f"{result['cause']}"
+#         )
+
+#         if (
+#             result[
+#                 "equivalent_occupied_width_meters"
+#             ] is not None
+#         ):
+#             print(
+#                 " " * 20
+#                 + "Equivalent occupied width: "
+#                 f"{result['equivalent_occupied_width_meters']} m "
+#                 f"/ "
+#                 f"{result['road_width_meters']} m"
+#             )
+
+#     print("=" * 65)
+
+
+# if __name__ == "__main__":
+#     main()
+
+
+
+
+
+
+
+
+
+
+
 """
 LaneLogic - PERSON 2: Space & Cause Analysis
 =============================================
@@ -275,52 +1325,41 @@ Role:
     Understand how much of the road is occupied/blocked and determine
     the most likely cause using transparent rule-based logic.
 
-INPUT FROM PERSON 1:
-    detections.json
+PERSON 1 INPUTS:
+    1. detections.json / detections1.json
+       Complete detection file for offline analysis.
 
-Each detection contains:
-    vehicle_id
-    vehicle_type
-    bbox
-    position
-    timestamp
-    confidence
-    movement_state
+    2. detection_stream.jsonl
+       Phase-wise detection stream for real-time processing.
 
-INPUT:
-    roi_config.json
+REAL-TIME FLOW:
 
-MAIN JOB:
-    1. Load road ROI.
-    2. Divide detections into time windows.
-    3. Count unique vehicles.
-    4. Calculate road occupancy.
-    5. Calculate blocked road occupancy.
-    6. Estimate occupied road area in square meters.
-    7. Calculate space usage percentage.
-    8. Assign severity / priority.
-    9. Determine likely cause.
-   10. Produce JSON for Person 3 backend.
+    Person 1
+        ↓
+    detection_stream.jsonl
+        ↓
+    Person 2
+        ↓
+    Analyze one phase
+        ↓
+    POST to Person 3 backend
+        ↓
+    Website updates
 
 IMPORTANT:
-    Occupancy is calculated from vehicle bounding-box area inside
-    the configured road polygon.
+    The existing space/cause analysis logic is preserved.
 
-    Example:
-        Road area = 20m x 120m = 2400m²
-        Vehicle-covered area = 1200m²
+    Person 2 processes each phase as soon as it appears in
+    detection_stream.jsonl.
 
-        occupancy = 1200 / 2400 * 100
-                  = 50%
-
-    This is an APPROXIMATE road-space occupancy measure.
-    Exact physical width in meters requires camera calibration/
-    perspective transformation.
+    One phase is normally 5 seconds, controlled by Person 1.
 """
 
 import argparse
-import requests
 import json
+import time
+import requests
+
 from collections import defaultdict
 from datetime import datetime
 
@@ -333,16 +1372,26 @@ from shapely.geometry import box as shapely_box
 # ============================================================
 
 DEFAULT_WINDOW_SECONDS = 2
+
 BACKEND_URL = "http://localhost:8000"
 
-# Occupancy / severity thresholds.
-# These are transparent demo thresholds and can be tuned later.
+DEFAULT_PHASE_POLL_SECONDS = 0.5
+
+
+# ============================================================
+# OCCUPANCY / SEVERITY THRESHOLDS
+# ============================================================
+
 LOW_OCCUPANCY_PCT = 20.0
 MODERATE_OCCUPANCY_PCT = 40.0
 HIGH_OCCUPANCY_PCT = 60.0
 CRITICAL_OCCUPANCY_PCT = 80.0
 
-# Blocked-space thresholds.
+
+# ============================================================
+# BLOCKED-SPACE THRESHOLDS
+# ============================================================
+
 LOW_BLOCKED_PCT = 10.0
 MODERATE_BLOCKED_PCT = 25.0
 HIGH_BLOCKED_PCT = 40.0
@@ -354,55 +1403,86 @@ CRITICAL_BLOCKED_PCT = 60.0
 # ============================================================
 
 def load_roi(roi_path):
-    with open(roi_path, "r", encoding="utf-8") as f:
+
+    with open(
+        roi_path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
         roi = json.load(f)
 
-    # ----------------------------
+    # --------------------------------------------------------
     # Validate road polygon
-    # ----------------------------
+    # --------------------------------------------------------
+
     if "road_polygon" not in roi:
-        raise ValueError("roi_config.json must contain 'road_polygon'.")
+
+        raise ValueError(
+            "roi_config.json must contain 'road_polygon'."
+        )
 
     if len(roi["road_polygon"]) < 3:
-        raise ValueError("road_polygon must contain at least 3 points.")
 
-    road_polygon = Polygon(roi["road_polygon"])
+        raise ValueError(
+            "road_polygon must contain at least 3 points."
+        )
+
+    road_polygon = Polygon(
+        roi["road_polygon"]
+    )
 
     if not road_polygon.is_valid:
+
         road_polygon = road_polygon.buffer(0)
 
     if road_polygon.is_empty:
-        raise ValueError("Invalid road_polygon.")
+
+        raise ValueError(
+            "Invalid road_polygon."
+        )
 
     roi["_road_polygon_shape"] = road_polygon
 
-    # ----------------------------
+    # --------------------------------------------------------
     # Signal / queue zone
-    # ----------------------------
+    # --------------------------------------------------------
+
     if roi.get("signal_queue_zone"):
+
         queue_polygon = Polygon(
             roi["signal_queue_zone"]["polygon"]
         )
 
         if not queue_polygon.is_valid:
+
             queue_polygon = queue_polygon.buffer(0)
 
         roi["_queue_zone_shape"] = queue_polygon
+
     else:
+
         roi["_queue_zone_shape"] = None
 
     return roi
 
 
 # ============================================================
-# LOAD PERSON 1 DETECTIONS
+# LOAD NORMAL PERSON 1 DETECTIONS
 # ============================================================
 
 def load_detections(detections_path):
-    with open(detections_path, "r", encoding="utf-8") as f:
+
+    with open(
+        detections_path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
         data = json.load(f)
 
     if not isinstance(data, list):
+
         raise ValueError(
             "detections.json must contain a list of detection records."
         )
@@ -414,74 +1494,134 @@ def load_detections(detections_path):
 # GROUP DETECTIONS INTO TIME WINDOWS
 # ============================================================
 
-def group_into_windows(records, window_seconds):
+def group_into_windows(
+    records,
+    window_seconds
+):
+
     windows = defaultdict(list)
 
     for record in records:
-        timestamp = float(record.get("timestamp", 0.0))
 
-        window_index = int(timestamp // window_seconds)
+        timestamp = float(
+            record.get(
+                "timestamp",
+                0.0
+            )
+        )
 
-        windows[window_index].append(record)
+        window_index = int(
+            timestamp // window_seconds
+        )
 
-    return dict(sorted(windows.items()))
+        windows[window_index].append(
+            record
+        )
+
+    return dict(
+        sorted(
+            windows.items()
+        )
+    )
 
 
 # ============================================================
 # VEHICLE AREA INSIDE ROAD ROI
 # ============================================================
 
-def vehicle_box_area_inside_roi(record, road_polygon):
+def vehicle_box_area_inside_roi(
+    record,
+    road_polygon
+):
+
     bbox = record.get("bbox")
 
     if not bbox or len(bbox) != 4:
+
         return 0.0
 
-    x1, y1, x2, y2 = map(float, bbox)
+    x1, y1, x2, y2 = map(
+        float,
+        bbox
+    )
 
     if x2 <= x1 or y2 <= y1:
+
         return 0.0
 
-    vehicle_box = shapely_box(x1, y1, x2, y2)
+    vehicle_box = shapely_box(
+        x1,
+        y1,
+        x2,
+        y2
+    )
 
-    if not vehicle_box.is_valid or vehicle_box.area <= 0:
+    if (
+        not vehicle_box.is_valid
+        or vehicle_box.area <= 0
+    ):
+
         return 0.0
 
-    intersection = vehicle_box.intersection(road_polygon)
+    intersection = vehicle_box.intersection(
+        road_polygon
+    )
 
     if intersection.is_empty:
+
         return 0.0
 
-    return float(intersection.area)
+    return float(
+        intersection.area
+    )
 
 
 # ============================================================
 # QUEUE ZONE CHECK
 # ============================================================
 
-def is_inside_queue_zone(record, queue_zone_shape):
+def is_inside_queue_zone(
+    record,
+    queue_zone_shape
+):
+
     if queue_zone_shape is None:
+
         return False
 
-    position = record.get("position")
+    position = record.get(
+        "position"
+    )
 
     if not position or len(position) != 2:
+
         return False
 
-    x, y = map(float, position)
+    x, y = map(
+        float,
+        position
+    )
 
-    return queue_zone_shape.contains(Point(x, y))
+    return queue_zone_shape.contains(
+        Point(x, y)
+    )
 
 
 # ============================================================
 # SCHOOL HOURS
 # ============================================================
 
-def in_school_hours(clock_time_str, school_hours):
+def in_school_hours(
+    clock_time_str,
+    school_hours
+):
+
     if not clock_time_str or not school_hours:
+
         return False
 
     try:
+
         fmt = "%H:%M"
 
         current_time = datetime.strptime(
@@ -499,9 +1639,17 @@ def in_school_hours(clock_time_str, school_hours):
             fmt
         ).time()
 
-        return start_time <= current_time <= end_time
+        return (
+            start_time
+            <= current_time
+            <= end_time
+        )
 
-    except (ValueError, KeyError):
+    except (
+        ValueError,
+        KeyError
+    ):
+
         return False
 
 
@@ -509,41 +1657,37 @@ def in_school_hours(clock_time_str, school_hours):
 # SEVERITY / PRIORITY
 # ============================================================
 
-def calculate_severity(occupancy_pct, blocked_pct):
-    """
-    Priority is based mainly on road-space occupancy.
+def calculate_severity(
+    occupancy_pct,
+    blocked_pct
+):
 
-    blocked_pct is also considered because stationary blockage
-    is more problematic than normal moving traffic.
-    """
-
-    # Critical:
-    # Very high overall occupancy OR very high blocked space.
     if (
         occupancy_pct >= CRITICAL_OCCUPANCY_PCT
         or blocked_pct >= CRITICAL_BLOCKED_PCT
     ):
+
         return "critical", 4
 
-    # High:
     if (
         occupancy_pct >= HIGH_OCCUPANCY_PCT
         or blocked_pct >= HIGH_BLOCKED_PCT
     ):
+
         return "high", 3
 
-    # Moderate:
     if (
         occupancy_pct >= MODERATE_OCCUPANCY_PCT
         or blocked_pct >= MODERATE_BLOCKED_PCT
     ):
+
         return "moderate", 2
 
-    # Low:
     if (
         occupancy_pct >= LOW_OCCUPANCY_PCT
         or blocked_pct >= LOW_BLOCKED_PCT
     ):
+
         return "low", 1
 
     return "normal", 0
@@ -560,15 +1704,16 @@ def classify_cause(
     blocked_pct,
     wall_clock_time=None
 ):
+
     """
     Explainable rule-based cause classifier.
 
-    IMPORTANT:
-        This is NOT an ML prediction.
-        It is a transparent rule-based interpretation.
+    This is NOT an ML prediction.
+    It is a transparent rule-based interpretation.
     """
 
     if occupancy_pct < LOW_OCCUPANCY_PCT:
+
         return (
             "normal",
             "Low road-space occupancy; no significant blockage detected."
@@ -600,7 +1745,9 @@ def classify_cause(
     # Signal queue
     # --------------------------------------------------------
 
-    queue_zone_shape = roi.get("_queue_zone_shape")
+    queue_zone_shape = roi.get(
+        "_queue_zone_shape"
+    )
 
     in_queue = [
         r
@@ -615,6 +1762,7 @@ def classify_cause(
         non_moving
         and len(in_queue) / len(non_moving) >= 0.60
     ):
+
         return (
             "traffic_signal_queue",
             f"{len(in_queue)} of {len(non_moving)} "
@@ -642,13 +1790,15 @@ def classify_cause(
     heavy_parked = [
         r
         for r in outside_queue_parked
-        if r.get("vehicle_type") in ("truck", "bus")
+        if r.get("vehicle_type")
+        in ("truck", "bus")
     ]
 
     if (
         1 <= len(heavy_parked) <= 2
         and len(outside_queue_parked) <= 3
     ):
+
         return (
             "loading_unloading",
             f"{len(heavy_parked)} truck/bus vehicle(s) "
@@ -666,9 +1816,16 @@ def classify_cause(
 
     small_stopped = [
         r
-        for r in (waiting + outside_queue_parked)
+        for r in (
+            waiting
+            + outside_queue_parked
+        )
         if r.get("vehicle_type")
-        in ("car", "motorcycle", "bicycle")
+        in (
+            "car",
+            "motorcycle",
+            "bicycle"
+        )
     ]
 
     if (
@@ -679,6 +1836,7 @@ def classify_cause(
         )
         and len(small_stopped) >= 3
     ):
+
         return (
             "school_drop_off",
             f"{len(small_stopped)} cars/two-wheelers "
@@ -691,6 +1849,7 @@ def classify_cause(
     # --------------------------------------------------------
 
     if len(outside_queue_parked) >= 3:
+
         return (
             "illegal_parking",
             f"{len(outside_queue_parked)} vehicles parked "
@@ -705,17 +1864,19 @@ def classify_cause(
         blocked_pct < LOW_BLOCKED_PCT
         and occupancy_pct >= MODERATE_OCCUPANCY_PCT
     ):
+
         return (
             "general_congestion",
             "High road-space occupancy with most vehicles "
             "still moving; likely slow-moving congestion."
         )
 
-        # --------------------------------------------------------
+    # --------------------------------------------------------
     # Single parked vehicle / unclear obstruction
     # --------------------------------------------------------
 
     if len(outside_queue_parked) >= 1:
+
         return (
             "illegal_parking",
             f"{len(outside_queue_parked)} vehicle(s) marked as parked "
@@ -740,9 +1901,11 @@ def classify_cause(
 # ============================================================
 
 def type_breakdown(records):
+
     breakdown = defaultdict(int)
 
     for record in records:
+
         vehicle_type = record.get(
             "vehicle_type",
             "unknown"
@@ -750,7 +1913,9 @@ def type_breakdown(records):
 
         breakdown[vehicle_type] += 1
 
-    return dict(breakdown)
+    return dict(
+        breakdown
+    )
 
 
 # ============================================================
@@ -758,6 +1923,7 @@ def type_breakdown(records):
 # ============================================================
 
 def state_breakdown(records):
+
     breakdown = {
         "moving": 0,
         "signal_waiting": 0,
@@ -766,12 +1932,14 @@ def state_breakdown(records):
     }
 
     for record in records:
+
         state = record.get(
             "movement_state",
             "unknown"
         )
 
         if state not in breakdown:
+
             state = "unknown"
 
         breakdown[state] += 1
@@ -790,16 +1958,20 @@ def analyze(
     road_id_override=None,
     road_name_override=None
 ):
+
     windows = group_into_windows(
         detections,
         window_seconds
     )
 
-    road_polygon = roi["_road_polygon_shape"]
+    road_polygon = roi[
+        "_road_polygon_shape"
+    ]
 
     road_pixel_area = road_polygon.area
 
     if road_pixel_area <= 0:
+
         raise ValueError(
             "Road ROI area must be greater than zero."
         )
@@ -809,15 +1981,22 @@ def analyze(
     # --------------------------------------------------------
 
     road_length_meters = float(
-        roi.get("road_length_meters", 0)
+        roi.get(
+            "road_length_meters",
+            0
+        )
     )
 
     road_width_meters = float(
-        roi.get("road_width_meters", 0)
+        roi.get(
+            "road_width_meters",
+            0
+        )
     )
 
     physical_road_area_m2 = (
-        road_length_meters * road_width_meters
+        road_length_meters
+        * road_width_meters
     )
 
     results = []
@@ -829,15 +2008,19 @@ def analyze(
     for window_index, records in windows.items():
 
         # ----------------------------------------------------
-        # Keep only latest observation of each vehicle
+        # Keep latest observation of each vehicle
         # ----------------------------------------------------
 
         latest_by_vehicle = {}
 
         for record in records:
-            vehicle_id = record.get("vehicle_id")
+
+            vehicle_id = record.get(
+                "vehicle_id"
+            )
 
             if vehicle_id is None:
+
                 continue
 
             old_record = latest_by_vehicle.get(
@@ -846,10 +2029,23 @@ def analyze(
 
             if (
                 old_record is None
-                or float(record.get("timestamp", 0))
-                >= float(old_record.get("timestamp", 0))
+                or float(
+                    record.get(
+                        "timestamp",
+                        0
+                    )
+                )
+                >= float(
+                    old_record.get(
+                        "timestamp",
+                        0
+                    )
+                )
             ):
-                latest_by_vehicle[vehicle_id] = record
+
+                latest_by_vehicle[
+                    vehicle_id
+                ] = record
 
         window_records = list(
             latest_by_vehicle.values()
@@ -860,6 +2056,7 @@ def analyze(
         # ----------------------------------------------------
 
         total_vehicle_area_pixels = 0.0
+
         blocked_vehicle_area_pixels = 0.0
 
         for record in window_records:
@@ -871,10 +2068,20 @@ def analyze(
                 )
             )
 
-            total_vehicle_area_pixels += vehicle_area
+            total_vehicle_area_pixels += (
+                vehicle_area
+            )
 
-            if record.get("movement_state") == "parked":
-                blocked_vehicle_area_pixels += vehicle_area
+            if (
+                record.get(
+                    "movement_state"
+                )
+                == "parked"
+            ):
+
+                blocked_vehicle_area_pixels += (
+                    vehicle_area
+                )
 
         # ----------------------------------------------------
         # Overall road-space occupancy
@@ -883,6 +2090,7 @@ def analyze(
         occupancy_pct = 0.0
 
         if road_pixel_area > 0:
+
             occupancy_pct = (
                 100.0
                 * total_vehicle_area_pixels
@@ -890,7 +2098,10 @@ def analyze(
             )
 
         occupancy_pct = min(
-            max(occupancy_pct, 0.0),
+            max(
+                occupancy_pct,
+                0.0
+            ),
             100.0
         )
 
@@ -901,6 +2112,7 @@ def analyze(
         blocked_pct = 0.0
 
         if road_pixel_area > 0:
+
             blocked_pct = (
                 100.0
                 * blocked_vehicle_area_pixels
@@ -908,7 +2120,10 @@ def analyze(
             )
 
         blocked_pct = min(
-            max(blocked_pct, 0.0),
+            max(
+                blocked_pct,
+                0.0
+            ),
             100.0
         )
 
@@ -927,6 +2142,7 @@ def analyze(
         # ----------------------------------------------------
 
         occupied_area_m2 = None
+
         blocked_area_m2 = None
 
         if physical_road_area_m2 > 0:
@@ -946,20 +2162,11 @@ def analyze(
             )
 
         # ----------------------------------------------------
-        # Approximate equivalent width occupied
-        #
-        # Example:
-        # road width = 20m
-        # occupancy = 50%
-        #
-        # equivalent width = 10m
-        #
-        # IMPORTANT:
-        # This is an equivalent/normalized width, not a
-        # perspective-correct physical measurement.
+        # Equivalent width
         # ----------------------------------------------------
 
         equivalent_occupied_width_m = None
+
         equivalent_blocked_width_m = None
 
         if road_width_meters > 0:
@@ -979,24 +2186,28 @@ def analyze(
             )
 
         # ----------------------------------------------------
-        # Severity / priority
+        # Severity
         # ----------------------------------------------------
 
-        severity, priority_score = calculate_severity(
-            occupancy_pct,
-            blocked_pct
+        severity, priority_score = (
+            calculate_severity(
+                occupancy_pct,
+                blocked_pct
+            )
         )
 
         # ----------------------------------------------------
         # Cause
         # ----------------------------------------------------
 
-        cause, explanation = classify_cause(
-            window_records,
-            roi,
-            occupancy_pct,
-            blocked_pct,
-            wall_clock_time=None
+        cause, explanation = (
+            classify_cause(
+                window_records,
+                roi,
+                occupancy_pct,
+                blocked_pct,
+                wall_clock_time=None
+            )
         )
 
         # ----------------------------------------------------
@@ -1015,25 +2226,27 @@ def analyze(
                     or roi["road_name"]
                 ),
 
-                "window_index": window_index,
+                "window_index":
+                    window_index,
 
-                "window_start_seconds": (
-                    window_index
-                    * window_seconds
-                ),
+                "window_start_seconds":
+                    (
+                        window_index
+                        * window_seconds
+                    ),
 
-                "window_end_seconds": (
-                    (window_index + 1)
-                    * window_seconds
-                ),
+                "window_end_seconds":
+                    (
+                        (window_index + 1)
+                        * window_seconds
+                    ),
 
                 # ----------------------------
                 # Vehicle information
                 # ----------------------------
 
-                "vehicle_count": len(
-                    window_records
-                ),
+                "vehicle_count":
+                    len(window_records),
 
                 "vehicle_type_breakdown":
                     type_breakdown(
@@ -1056,12 +2269,14 @@ def analyze(
                     road_width_meters,
 
                 "road_area_m2":
-                    round(
-                        physical_road_area_m2,
-                        2
-                    )
-                    if physical_road_area_m2 > 0
-                    else None,
+                    (
+                        round(
+                            physical_road_area_m2,
+                            2
+                        )
+                        if physical_road_area_m2 > 0
+                        else None
+                    ),
 
                 "occupancy_pct":
                     occupancy_pct,
@@ -1107,6 +2322,501 @@ def analyze(
 
 
 # ============================================================
+# SEND ANALYSIS TO PERSON 3
+# ============================================================
+
+def send_to_backend(results):
+
+    if not results:
+
+        return False
+
+    try:
+
+        response = requests.post(
+            f"{BACKEND_URL}/analysis/bulk",
+            json={
+                "observations": results
+            },
+            timeout=10
+        )
+
+        if response.ok:
+
+            print(
+                "✓ Analysis sent to Person 3 backend"
+            )
+
+            return True
+
+        print(
+            f"✗ Backend rejected analysis: "
+            f"{response.status_code}"
+        )
+
+        print(
+            response.text
+        )
+
+        return False
+
+    except requests.RequestException as e:
+
+        print(
+            f"✗ Could not connect to Person 3 backend: {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# SAVE COMPLETE ANALYSIS
+# ============================================================
+
+def save_complete_analysis(
+    results,
+    output_path
+):
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            results,
+            f,
+            indent=2
+        )
+
+
+# ============================================================
+# APPEND PHASE ANALYSIS TO JSONL
+# ============================================================
+
+def append_phase_output(
+    phase_number,
+    phase_start,
+    phase_end,
+    results,
+    output_path
+):
+
+    phase_output = {
+        "phase": phase_number,
+        "start_time": phase_start,
+        "end_time": phase_end,
+        "record_count": len(results),
+        "observations": results
+    }
+
+    with open(
+        output_path,
+        "a",
+        encoding="utf-8"
+    ) as f:
+
+        f.write(
+            json.dumps(
+                phase_output
+            )
+            + "\n"
+        )
+
+
+# ============================================================
+# PRINT PHASE SUMMARY
+# ============================================================
+
+def print_phase_summary(
+    phase_number,
+    phase_start,
+    phase_end,
+    detections,
+    results
+):
+
+    print()
+    print("=" * 70)
+
+    print(
+        f"LANELOGIC - PERSON 2 - PHASE {phase_number}"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Phase     : {phase_start:.2f}s "
+        f"→ {phase_end:.2f}s"
+    )
+
+    print(
+        f"Detections: {len(detections)}"
+    )
+
+    print(
+        f"Windows   : {len(results)}"
+    )
+
+    print("-" * 70)
+
+    for result in results:
+
+        print(
+            f"Window {result['window_index']:>3} | "
+            f"Vehicles: {result['vehicle_count']:>2} | "
+            f"Occupancy: "
+            f"{result['occupancy_pct']:>6.2f}% | "
+            f"Blocked: "
+            f"{result['blocked_pct']:>6.2f}% | "
+            f"Priority: "
+            f"{result['severity']:<9} | "
+            f"Cause: "
+            f"{result['cause']}"
+        )
+
+    print("=" * 70)
+
+
+# ============================================================
+# REAL-TIME PHASE PROCESSOR
+# ============================================================
+
+def process_phase_stream(
+    phase_input,
+    roi,
+    output,
+    phase_output,
+    window_seconds,
+    road_id_override=None,
+    road_name_override=None,
+    poll_seconds=DEFAULT_PHASE_POLL_SECONDS
+):
+
+    print()
+    print("=" * 70)
+    print("LANELOGIC - PERSON 2 REAL-TIME MODE")
+    print("=" * 70)
+
+    print(
+        f"Phase input : {phase_input}"
+    )
+
+    print(
+        f"Analysis    : {output}"
+    )
+
+    print(
+        f"Phase output: {phase_output}"
+    )
+
+    print(
+        f"Backend     : {BACKEND_URL}"
+    )
+
+    print()
+    print(
+        "Waiting for Person 1 phases..."
+    )
+
+    print(
+        "Press Ctrl+C to stop."
+    )
+
+    # --------------------------------------------------------
+    # All analysis results
+    # --------------------------------------------------------
+
+    all_results = []
+
+    # --------------------------------------------------------
+    # Number of lines already processed
+    # --------------------------------------------------------
+
+    processed_lines = 0
+
+    # --------------------------------------------------------
+    # Create phase analysis file fresh
+    # --------------------------------------------------------
+
+    with open(
+        phase_output,
+        "w",
+        encoding="utf-8"
+    ):
+        pass
+
+    try:
+
+        while True:
+
+            # ------------------------------------------------
+            # If Person 1 has not created the file yet
+            # ------------------------------------------------
+
+            try:
+
+                with open(
+                    phase_input,
+                    "r",
+                    encoding="utf-8"
+                ) as f:
+
+                    lines = f.readlines()
+
+            except FileNotFoundError:
+
+                time.sleep(
+                    poll_seconds
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Process new phase lines
+            # ------------------------------------------------
+
+            if processed_lines < len(lines):
+
+                new_lines = lines[
+                    processed_lines:
+                ]
+
+                for line in new_lines:
+
+                    line = line.strip()
+
+                    if not line:
+
+                        processed_lines += 1
+
+                        continue
+
+                    try:
+
+                        phase_data = json.loads(
+                            line
+                        )
+
+                    except json.JSONDecodeError as e:
+
+                        print(
+                            f"⚠ Could not read phase: {e}"
+                        )
+
+                        processed_lines += 1
+
+                        continue
+
+                    # ----------------------------------------
+                    # Read phase information
+                    # ----------------------------------------
+
+                    phase_number = phase_data.get(
+                        "phase",
+                        processed_lines + 1
+                    )
+
+                    phase_start = float(
+                        phase_data.get(
+                            "start_time",
+                            0.0
+                        )
+                    )
+
+                    phase_end = float(
+                        phase_data.get(
+                            "end_time",
+                            phase_start
+                        )
+                    )
+
+                    detections = phase_data.get(
+                        "detections",
+                        []
+                    )
+
+                    if not isinstance(
+                        detections,
+                        list
+                    ):
+
+                        print(
+                            f"⚠ Phase {phase_number} "
+                            f"has invalid detections."
+                        )
+
+                        processed_lines += 1
+
+                        continue
+
+                    print()
+                    print(
+                        f"→ New Phase {phase_number} received"
+                    )
+
+                    # ----------------------------------------
+                    # Analyze this phase
+                    # ----------------------------------------
+
+                    results = analyze(
+                        detections=detections,
+                        roi=roi,
+                        window_seconds=window_seconds,
+                        road_id_override=road_id_override,
+                        road_name_override=road_name_override
+                    )
+
+                    # ----------------------------------------
+                    # Add phase metadata
+                    # ----------------------------------------
+
+                    for result in results:
+
+                        result[
+                            "phase"
+                        ] = phase_number
+
+                        result[
+                            "phase_start_seconds"
+                        ] = phase_start
+
+                        result[
+                            "phase_end_seconds"
+                        ] = phase_end
+
+                    # ----------------------------------------
+                    # Save locally
+                    # ----------------------------------------
+
+                    all_results.extend(
+                        results
+                    )
+
+                    save_complete_analysis(
+                        all_results,
+                        output
+                    )
+
+                    append_phase_output(
+                        phase_number,
+                        phase_start,
+                        phase_end,
+                        results,
+                        phase_output
+                    )
+
+                    # ----------------------------------------
+                    # Send immediately to backend
+                    # ----------------------------------------
+
+                    send_to_backend(
+                        results
+                    )
+
+                    # ----------------------------------------
+                    # Console
+                    # ----------------------------------------
+
+                    print_phase_summary(
+                        phase_number,
+                        phase_start,
+                        phase_end,
+                        detections,
+                        results
+                    )
+
+                    processed_lines += 1
+
+            # ------------------------------------------------
+            # Wait for next phase
+            # ------------------------------------------------
+
+            time.sleep(
+                poll_seconds
+            )
+
+    except KeyboardInterrupt:
+
+        print()
+        print(
+            "Person 2 real-time processing stopped."
+        )
+
+
+# ============================================================
+# OFFLINE MODE
+# ============================================================
+
+def process_offline(
+    detections_path,
+    roi,
+    output,
+    window_seconds,
+    road_id_override=None,
+    road_name_override=None
+):
+
+    detections = load_detections(
+        detections_path
+    )
+
+    results = analyze(
+        detections=detections,
+        roi=roi,
+        window_seconds=window_seconds,
+        road_id_override=road_id_override,
+        road_name_override=road_name_override
+    )
+
+    save_complete_analysis(
+        results,
+        output
+    )
+
+    send_to_backend(
+        results
+    )
+
+    print()
+    print("=" * 70)
+    print("LANELOGIC - PERSON 2 ANALYSIS")
+    print("=" * 70)
+
+    print(
+        f"Detections: {len(detections)}"
+    )
+
+    print(
+        f"Windows   : {len(results)}"
+    )
+
+    print(
+        f"Output    : {output}"
+    )
+
+    print("-" * 70)
+
+    for result in results[:10]:
+
+        print(
+            f"Window {result['window_index']:>3} | "
+            f"Vehicles: {result['vehicle_count']:>2} | "
+            f"Occupancy: "
+            f"{result['occupancy_pct']:>6.2f}% | "
+            f"Blocked: "
+            f"{result['blocked_pct']:>6.2f}% | "
+            f"Priority: "
+            f"{result['severity']:<9} | "
+            f"Cause: "
+            f"{result['cause']}"
+        )
+
+    print("=" * 70)
+
+
+# ============================================================
 # COMMAND LINE
 # ============================================================
 
@@ -1119,6 +2829,10 @@ def main():
         )
     )
 
+    # --------------------------------------------------------
+    # Normal/offline detections input
+    # --------------------------------------------------------
+
     parser.add_argument(
         "--detections",
         default=(
@@ -1126,9 +2840,26 @@ def main():
             "output/detections.json"
         ),
         help=(
-            "Path to Person 1 detections.json"
+            "Path to Person 1 complete detections JSON."
         )
     )
+
+    # --------------------------------------------------------
+    # Real-time phase input
+    # --------------------------------------------------------
+
+    parser.add_argument(
+        "--phase-input",
+        default=None,
+        help=(
+            "Path to Person 1 detection_stream.jsonl "
+            "for real-time phase processing."
+        )
+    )
+
+    # --------------------------------------------------------
+    # ROI
+    # --------------------------------------------------------
 
     parser.add_argument(
         "--roi",
@@ -1136,25 +2867,58 @@ def main():
         help="Path to roi_config.json"
     )
 
+    # --------------------------------------------------------
+    # Final complete analysis
+    # --------------------------------------------------------
+
     parser.add_argument(
         "--output",
         default="analysis.json",
         help=(
-            "Path to output analysis JSON"
+            "Path to complete analysis JSON."
         )
     )
+
+    # --------------------------------------------------------
+    # Phase analysis output
+    # --------------------------------------------------------
+
+    parser.add_argument(
+        "--phase-output",
+        default="analysis_stream.jsonl",
+        help=(
+            "Path to phase-wise analysis JSONL."
+        )
+    )
+
+    # --------------------------------------------------------
+    # Analysis window
+    # --------------------------------------------------------
 
     parser.add_argument(
         "--window-seconds",
         type=int,
         default=DEFAULT_WINDOW_SECONDS,
         help=(
-            "Time window size in seconds"
+            "Analysis window size in seconds."
         )
     )
 
     # --------------------------------------------------------
-    # Road identity overrides
+    # Polling interval
+    # --------------------------------------------------------
+
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=DEFAULT_PHASE_POLL_SECONDS,
+        help=(
+            "How often Person 2 checks for new phases."
+        )
+    )
+
+    # --------------------------------------------------------
+    # Road identity
     # --------------------------------------------------------
 
     parser.add_argument(
@@ -1176,133 +2940,50 @@ def main():
     args = parser.parse_args()
 
     # --------------------------------------------------------
-    # Load input
+    # Load ROI
     # --------------------------------------------------------
 
     roi = load_roi(
         args.roi
     )
 
-    detections = load_detections(
-        args.detections
-    )
+    # ========================================================
+    # REAL-TIME MODE
+    # ========================================================
 
-    # --------------------------------------------------------
-    # Analyze
-    # --------------------------------------------------------
+    if args.phase_input:
 
-    results = analyze(
-        detections=detections,
+        process_phase_stream(
+            phase_input=args.phase_input,
+            roi=roi,
+            output=args.output,
+            phase_output=args.phase_output,
+            window_seconds=args.window_seconds,
+            road_id_override=args.road_id,
+            road_name_override=args.road_name,
+            poll_seconds=args.poll_seconds
+        )
+
+        return
+
+    # ========================================================
+    # OFFLINE MODE
+    # ========================================================
+
+    process_offline(
+        detections_path=args.detections,
         roi=roi,
+        output=args.output,
         window_seconds=args.window_seconds,
         road_id_override=args.road_id,
         road_name_override=args.road_name
     )
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
 
-    with open(
-        args.output,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            results,
-            f,
-            indent=2
-        )
-
-            # --------------------------------------------------------
-    # Send analysis to Person 3 backend
-    # --------------------------------------------------------
-
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/analysis/bulk",
-            json={"observations": results},
-            timeout=10
-        )
-
-        if response.ok:
-            print("✓ Analysis sent to Person 3 backend")
-        else:
-            print(
-                f"✗ Backend rejected analysis: "
-                f"{response.status_code}"
-            )
-            print(response.text)
-
-    except requests.RequestException as e:
-        print(
-            f"✗ Could not connect to Person 3 backend: {e}"
-        )
-
-    # --------------------------------------------------------
-    # Console summary
-    # --------------------------------------------------------
-
-    print()
-    print("=" * 65)
-    print("LANELOGIC - PERSON 2 ANALYSIS")
-    print("=" * 65)
-
-    print(
-        f"Road ID   : "
-        f"{args.road_id or roi['road_id']}"
-    )
-
-    print(
-        f"Road Name : "
-        f"{args.road_name or roi['road_name']}"
-    )
-
-    print(
-        f"Detections: {len(detections)}"
-    )
-
-    print(
-        f"Windows   : {len(results)}"
-    )
-
-    print(
-        f"Output    : {args.output}"
-    )
-
-    print("-" * 65)
-
-    for result in results[:10]:
-
-        print(
-            f"Window {result['window_index']:>3} | "
-            f"Vehicles: {result['vehicle_count']:>2} | "
-            f"Occupancy: "
-            f"{result['occupancy_pct']:>6.2f}% | "
-            f"Blocked: "
-            f"{result['blocked_pct']:>6.2f}% | "
-            f"Priority: "
-            f"{result['severity']:<8} | "
-            f"Cause: "
-            f"{result['cause']}"
-        )
-
-        if (
-            result[
-                "equivalent_occupied_width_meters"
-            ] is not None
-        ):
-            print(
-                " " * 20
-                + "Equivalent occupied width: "
-                f"{result['equivalent_occupied_width_meters']} m "
-                f"/ "
-                f"{result['road_width_meters']} m"
-            )
-
-    print("=" * 65)
-
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
+
     main()
