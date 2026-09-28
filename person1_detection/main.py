@@ -4047,6 +4047,30 @@ def write_outputs(
                 row
             )
 
+    # --------------------------------------------------------
+    # Closed-Loop Obstruction Events Generation
+    # --------------------------------------------------------
+    try:
+        import sys
+        core_dir = Path(__file__).resolve().parent.parent
+        if str(core_dir) not in sys.path:
+            sys.path.insert(0, str(core_dir))
+        from core.event_engine import ObstructionEventEngine
+
+        event_path = output_path.parent / "obstruction_events.json"
+        engine = ObstructionEventEngine(
+            stationary_threshold_sec=PARKED_TIME_THRESHOLD_SECONDS,
+            max_disappearance_gap_sec=3.0,
+            road_width_m=10.0,
+            road_length_m=120.0,
+        )
+        events = engine.process_batch(detections)
+        with open(event_path, "w", encoding="utf-8") as f:
+            json.dump([e.model_dump() for e in events], f, indent=2)
+        print(f"[Person1] Generated {len(events)} canonical obstruction event(s) -> {event_path.name}")
+    except Exception as e:
+        print(f"[Person1] Note on obstruction events generation: {e}")
+
 
 # ============================================================
 # VIDEO SOURCE

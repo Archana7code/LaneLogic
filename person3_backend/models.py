@@ -126,7 +126,8 @@ from sqlalchemy import (
     Float,
     DateTime,
     ForeignKey,
-    JSON
+    JSON,
+    UniqueConstraint
 )
 
 from sqlalchemy.orm import relationship
@@ -290,6 +291,9 @@ class VehicleDetection(Base):
 
 class RoadWindowObservation(Base):
     __tablename__ = "road_window_observations"
+    __table_args__ = (
+        UniqueConstraint("road_id", "window_index", name="uq_road_window"),
+    )
 
     id = Column(
         Integer,
@@ -500,3 +504,93 @@ class Recommendation(Base):
         DateTime,
         server_default=func.now()
     )
+
+
+# ============================================================
+# CANONICAL OBSTRUCTION EVENTS
+# ============================================================
+
+class ObstructionEventModel(Base):
+    __tablename__ = "obstruction_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String, unique=True, index=True)
+    road_id = Column(String, ForeignKey("roads.id"), index=True)
+    camera_id = Column(String, default="CAM_01")
+    vehicle_id = Column(Integer, index=True)
+    vehicle_type = Column(String)
+    start_time = Column(Float)
+    end_time = Column(Float, nullable=True)
+    duration_sec = Column(Float, default=0.0)
+    location = Column(JSON, nullable=True)
+    bbox = Column(JSON, nullable=True)
+    road_width_m = Column(Float, nullable=True)
+    occupied_width_m = Column(Float, nullable=True)
+    road_space_loss_pct = Column(Float, default=0.0)
+    recurrence_score = Column(Float, default=0.0)
+    cause = Column(String, default="unclassified")
+    cause_confidence = Column(Float, default=0.0)
+    cause_explanation = Column(String, nullable=True)
+    severity = Column(String, default="normal")
+    status = Column(String, default="active")
+    event_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+# ============================================================
+# HUMAN FEEDBACK (AUTHORITY IN THE LOOP)
+# ============================================================
+
+class HumanFeedbackModel(Base):
+    __tablename__ = "human_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String, nullable=True, index=True)
+    road_id = Column(String, ForeignKey("roads.id"), index=True)
+    feedback_type = Column(String)  # cause_confirmation, cause_correction, etc.
+    original_value = Column(String, nullable=True)
+    corrected_value = Column(String, nullable=True)
+    accepted = Column(Integer, nullable=True)  # 1/0
+    notes = Column(String, nullable=True)
+    authority_user = Column(String, default="traffic_engineer")
+    created_at = Column(DateTime, server_default=func.now())
+
+
+# ============================================================
+# INTERVENTION OUTCOME TRACKING
+# ============================================================
+
+class InterventionOutcomeModel(Base):
+    __tablename__ = "intervention_outcomes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    road_id = Column(String, ForeignKey("roads.id"), index=True)
+    intervention_type = Column(String)
+    implementation_date = Column(String)
+    baseline_window_description = Column(String)
+    post_window_description = Column(String)
+    baseline_metrics = Column(JSON)
+    post_metrics = Column(JSON)
+    observed_change = Column(JSON)
+    is_causal_claim = Column(Integer, default=0)
+    notes = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+# ============================================================
+# OPERATIONAL ALERTS
+# ============================================================
+
+class AlertModel(Base):
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_type = Column(String)
+    severity = Column(String)
+    road_id = Column(String, ForeignKey("roads.id"), index=True)
+    event_id = Column(String, nullable=True)
+    message = Column(String)
+    status = Column(String, default="active")  # active, acknowledged, resolved
+    created_at = Column(DateTime, server_default=func.now())
+    acknowledged_at = Column(DateTime, nullable=True)
+    acknowledged_by = Column(String, nullable=True)

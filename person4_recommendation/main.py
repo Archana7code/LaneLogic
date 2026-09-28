@@ -41,35 +41,47 @@ Run:
 
 import argparse
 from collections import Counter, defaultdict
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 import requests
 
+from core.interventions import RecommendationDecisionEngine
+from core.recurrence import HistoricalRecurrenceEngine
+from core.cause_classifier import ExplainableCauseClassifier, normalize_cause_name
+from core.contracts import ObstructionEvent
+from core.config import (
+    MIN_EVENTS_FOR_CHRONIC,
+    CHRONIC_RECURRENCE_THRESHOLD,
+    CHRONIC_MIN_PARKED_SPACE_PCT,
+    MIN_PARKED_VEHICLES_FOR_RECURRENCE,
+)
+
+rec_decision_engine = RecommendationDecisionEngine()
+cause_classifier = ExplainableCauseClassifier()
 
 # ============================================================
 # CONFIGURATION
+# Meaningful, configurable evidence-based thresholds
 # ============================================================
 
 BACKEND_URL_DEFAULT = "http://localhost:8000"
 
-# Minimum number of historical windows needed before a road can be
-# called "chronic" at all.
-MIN_WINDOWS_REQUIRED = 1 # change, org : 3
+# Minimum number of historical observations/windows required before a road can qualify as chronic
+MIN_WINDOWS_REQUIRED = MIN_EVENTS_FOR_CHRONIC
 
-# A road is chronic when at least this fraction of its historical
-# windows show a meaningful parked-vehicle problem.
-CHRONIC_WINDOW_FRACTION = 0.00 # change , org : 0.40
+# Thresholds for flagging a "current problem" recommendation
+CURRENT_PROBLEM_PARKED_VEHICLES = MIN_PARKED_VEHICLES_FOR_RECURRENCE
+CURRENT_PROBLEM_MIN_PARKED_SPACE_PCT = CHRONIC_MIN_PARKED_SPACE_PCT
 
-# A window counts as "meaningful blockage" only if BOTH the vehicle
-# count and the parked-space percentage clear these bars. Requiring
-# both prevents a single briefly-parked car from counting the same
-# as a genuine, space-consuming blockage.
-MIN_PARKED_VEHICLES_FOR_RECURRENCE = 1
-CHRONIC_MIN_PARKED_SPACE_PCT = 0.0 # change , org : 5.0
-
-# Threshold for flagging a "current problem" recommendation even when
-# there isn't yet enough history to call the road chronic.
-CURRENT_PROBLEM_PARKED_VEHICLES = 1
-CURRENT_PROBLEM_MIN_PARKED_SPACE_PCT = 0.0 # change, org : 3.0
+recurrence_engine = HistoricalRecurrenceEngine(
+    min_events_for_chronic=MIN_WINDOWS_REQUIRED,
+    chronic_recurrence_threshold=CHRONIC_RECURRENCE_THRESHOLD,
+)
 
 
 # ============================================================
@@ -164,73 +176,51 @@ def get_latest_observation(observations):
 
 
 # ============================================================
-# CHRONIC ROAD EVALUATION
+# CHRONIC ROAD EVALUATION VIA HISTORICAL RECURRENCE ENGINE
 # ============================================================
 
 def analyse_road(road_id, observations):
     """
-    Analyse one road's historical observations and decide whether it is
-    a Chronic Problem Zone.
+    Analyse one road's historical observations using the authoritative
+    HistoricalRecurrenceEngine to determine empirical recurrence, peak hours,
+    evidence summary, and chronic zone qualification.
     """
     if not observations:
         return {
             "road_id": road_id,
             "chronic": False,
+            "single_event_severity": False,
             "total_windows": 0,
             "parked_windows": 0,
             "recurrence_fraction": 0.0,
             "average_parked_space_pct": 0.0,
             "dominant_cause": "normal",
+            "evidence_summary": "No historical observations available.",
+            "peak_hours": [],
+            "severity": "normal",
         }
 
-    total_windows = len(observations)
-    parked_windows = 0
-    parked_space_values = []
-    causes = []
-
-    for observation in observations:
-        parked_count = get_parked_vehicle_count(observation)
-        parked_space = get_parked_space_pct(observation)
-        parked_space_values.append(parked_space)
-
-        # A window only counts toward recurrence if BOTH the vehicle
-        # count AND the parked-space percentage clear their thresholds.
-        if (
-            parked_count >= MIN_PARKED_VEHICLES_FOR_RECURRENCE
-            and parked_space >= CHRONIC_MIN_PARKED_SPACE_PCT
-        ):
-            parked_windows += 1
-
-        cause = get_cause(observation)
-        if cause != "normal":
-            causes.append(cause)
-
-    recurrence_fraction = parked_windows / total_windows
-    average_parked_space = (
-        sum(parked_space_values) / len(parked_space_values)
-        if parked_space_values
-        else 0.0
-    )
-
-    # chronic = (
-    #     total_windows >= MIN_WINDOWS_REQUIRED
-    #     and recurrence_fraction >= CHRONIC_WINDOW_FRACTION
-    # )
-
-    chronic = parked_windows >= 1
-
-    dominant_cause = (
-        Counter(causes).most_common(1)[0][0] if causes else "normal"
+    # Authoritative engine analysis
+    pattern = recurrence_engine.analyze_windows(
+        road_id=road_id,
+        observations=observations,
+        observation_period_days=1,
+        min_parked_space_pct=CHRONIC_MIN_PARKED_SPACE_PCT,
     )
 
     return {
         "road_id": road_id,
-        "chronic": chronic,
-        "total_windows": total_windows,
-        "parked_windows": parked_windows,
-        "recurrence_fraction": round(recurrence_fraction, 3),
-        "average_parked_space_pct": round(average_parked_space, 3),
-        "dominant_cause": dominant_cause,
+        "chronic": pattern.is_chronic,
+        "single_event_severity": pattern.single_event_severity,
+        "total_windows": len(observations),
+        "parked_windows": pattern.total_events,
+        "recurrence_fraction": pattern.recurrence_score,
+        "average_parked_space_pct": pattern.average_road_space_loss_pct,
+        "dominant_cause": pattern.dominant_cause,
+        "evidence_summary": pattern.evidence_summary,
+        "peak_hours": pattern.peak_hours,
+        "severity": pattern.severity,
+        "pattern": pattern,
     }
 
 
@@ -267,44 +257,55 @@ def get_current_problem(latest_observation):
 # RECOMMENDATION BUILDING (matches Person 3's RecommendationIn exactly)
 # ============================================================
 
-def build_recommendation_set(road_id, cause, severity_pct, rationale_detail):
+def build_recommendation_set(
+    road_id,
+    cause,
+    severity_pct,
+    rationale_detail,
+    duration_sec=30.0,
+    recurrence_score=0.5,
+):
     """
-    Build ALL candidate interventions for a cause, ranked by
-    benefit-to-difficulty ratio, highest value first.
+    Build candidate interventions using the multi-criteria decision engine,
+    matching Person 3's RecommendationIn schema exactly.
+    Uses actual classifier confidence rather than hardcoded metrics.
     """
-    candidates = CAUSE_INTERVENTION_MAP.get(cause, CAUSE_INTERVENTION_MAP["unclassified"])
+    norm_cause = normalize_cause_name(cause)
+    pred = cause_classifier.classify(
+        vehicle_type="car",
+        duration_sec=duration_sec,
+        road_space_loss_pct=severity_pct,
+        recurrence_score=recurrence_score,
+    )
+    actual_confidence = pred.confidence
 
-    scored = []
-    for intervention, difficulty, benefit_weight in candidates:
-        expected_benefit = round(min(100.0, severity_pct * benefit_weight), 1)
-        ranking_score = expected_benefit / max(1.0, difficulty)
-        scored.append({
-            "road_id": road_id,
-            "cause": cause,
-            "intervention": intervention,
-            "expected_benefit_score": expected_benefit,
-            "implementation_difficulty_score": float(difficulty),
-            "rationale": (
-                f"Cause '{cause}' observed with {severity_pct:.2f}% parked-space "
-                f"blockage. {rationale_detail} Recommendation is a rule-based "
-                f"suggestion, not a guaranteed real-world outcome."
-            ),
-            "_ranking_score": ranking_score,
-        })
-
-    scored.sort(key=lambda r: r["_ranking_score"], reverse=True)
-    for i, r in enumerate(scored, start=1):
-        r["priority_rank"] = i
-        r.pop("_ranking_score")
-
-    return scored
-
+    recs = rec_decision_engine.generate_recommendations(
+        road_id=road_id,
+        cause=norm_cause,
+        cause_confidence=actual_confidence,
+        road_space_loss_pct=severity_pct,
+        recurrence_score=recurrence_score,
+        evidence_summary=rationale_detail,
+    )
+    return [
+        {
+            "road_id": r.road_id,
+            "cause": r.cause,
+            "intervention": r.intervention,
+            "expected_benefit_score": r.expected_benefit_score,
+            "implementation_difficulty_score": r.implementation_difficulty_score,
+            "priority_rank": r.priority_rank,
+            "rationale": r.rationale,
+        }
+        for r in recs
+    ]
 
 
 def build_chronic_zone_payload(analysis):
     """
     Build the payload matching schemas.ChronicZoneIn exactly: road_id,
     dominant_cause, occurrence_count, severity_score, notes.
+    Notes are enriched with evidence traceability instead of placeholder strings.
     """
     severity_score = round(
         min(
@@ -315,12 +316,20 @@ def build_chronic_zone_payload(analysis):
         1,
     )
 
+    peak_str = ", ".join(f"{h:02d}:00" for h in analysis.get("peak_hours", [])) or "varied"
+    evidence_text = analysis.get("evidence_summary") or "Evaluated via HistoricalRecurrenceEngine."
+    notes = (
+        f"{evidence_text} Dominant cause: {analysis['dominant_cause']}. "
+        f"Recurrence score: {analysis['recurrence_fraction']:.2f}. "
+        f"Peak hours: {peak_str}. Severity: {analysis.get('severity', 'moderate')}."
+    )
+
     return {
         "road_id": analysis["road_id"],
         "dominant_cause": analysis["dominant_cause"],
         "occurrence_count": analysis["parked_windows"],
         "severity_score": severity_score,
-        "notes": "Auto-flagged by Person 4 rule-based recurrence analysis.",
+        "notes": notes,
     }
 
 
@@ -333,9 +342,9 @@ def send_recommendations(api_base, recommendations):
         return
     try:
         post_json(api_base, "/recommendations/bulk", recommendations)
-        print(f"      \u2713 {len(recommendations)} recommendation(s) sent to backend")
+        print(f"      [OK] {len(recommendations)} recommendation(s) sent to backend")
     except requests.RequestException as e:
-        print(f"      \u26a0 Could not send recommendation(s): {e}")
+        print(f"      [WARN] Could not send recommendation(s): {e}")
 
 
 def send_chronic_zone(api_base, analysis):
@@ -344,9 +353,9 @@ def send_chronic_zone(api_base, analysis):
     payload = build_chronic_zone_payload(analysis)
     try:
         post_json(api_base, "/chronic-zones/bulk", [payload])
-        print("      \u2713 Chronic zone sent to backend")
+        print("      [OK] Chronic zone sent to backend")
     except requests.RequestException as e:
-        print(f"      \u26a0 Could not send chronic zone: {e}")
+        print(f"      [WARN] Could not send chronic zone: {e}")
 
 
 # ============================================================
@@ -419,21 +428,40 @@ def main():
 
         if analysis["chronic"]:
             chronic_count += 1
-            print("  STATUS             : \U0001F534 CHRONIC ZONE")
+            print("  STATUS             : [CRITICAL] CHRONIC ZONE")
 
             rationale_detail = (
-                f"Parked vehicles were observed in {analysis['parked_windows']} "
-                f"of {analysis['total_windows']} historical windows."
+                f"Parked vehicles observed across {analysis['parked_windows']} of {analysis['total_windows']} "
+                f"historical windows with {analysis['recurrence_fraction']:.2f} recurrence score. {analysis['evidence_summary']}"
             )
-            recommendations.append(
+            recommendations.extend(
                 build_recommendation_set(
-                    road_id,
-                    analysis["dominant_cause"],
-                    analysis["average_parked_space_pct"],
-                    rationale_detail,
+                    road_id=road_id,
+                    cause=analysis["dominant_cause"],
+                    severity_pct=analysis["average_parked_space_pct"],
+                    rationale_detail=rationale_detail,
+                    duration_sec=analysis.get("pattern").average_duration_sec if analysis.get("pattern") else 30.0,
+                    recurrence_score=analysis["recurrence_fraction"],
                 )
             )
             send_chronic_zone(api_base, analysis)
+
+        elif analysis.get("single_event_severity"):
+            print("  STATUS             : [WARNING] PROLONGED / SEVERE OBSTRUCTION (isolated, not yet chronic)")
+            rationale_detail = (
+                f"Single severe/prolonged obstruction detected ({analysis['average_parked_space_pct']:.1f}% space loss). "
+                f"Requires operational monitoring; not yet qualified as recurring chronic problem."
+            )
+            recommendations.extend(
+                build_recommendation_set(
+                    road_id=road_id,
+                    cause=analysis["dominant_cause"],
+                    severity_pct=analysis["average_parked_space_pct"],
+                    rationale_detail=rationale_detail,
+                    duration_sec=60.0,
+                    recurrence_score=0.20,
+                )
+            )
 
         else:
             current_problem = get_current_problem(latest)
@@ -444,12 +472,14 @@ def main():
                     f"currently detected; more history is needed before calling "
                     f"this road chronic."
                 )
-                recommendations.append(
-                    build_recommendation(
-                        road_id,
-                        current_problem["cause"],
-                        current_problem["parked_space_pct"],
-                        rationale_detail,
+                recommendations.extend(
+                    build_recommendation_set(
+                        road_id=road_id,
+                        cause=current_problem["cause"],
+                        severity_pct=current_problem["parked_space_pct"],
+                        rationale_detail=rationale_detail,
+                        duration_sec=15.0,
+                        recurrence_score=0.10,
                     )
                 )
             else:

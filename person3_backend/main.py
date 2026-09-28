@@ -292,7 +292,8 @@ Docs:
     http://localhost:8000/docs
 """
 
-from typing import Optional, List
+from typing import Optional, List, Union, Dict, Any
+import logging
 
 from fastapi import (
     FastAPI,
@@ -313,14 +314,26 @@ from database import (
     get_db
 )
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("lanelogic.backend")
 
 # ============================================================
-# DATABASE INITIALIZATION
+# DATABASE INITIALIZATION & CLEANUP
 # ============================================================
 
 models.Base.metadata.create_all(
     bind=engine
 )
+
+# Startup deduplication of legacy duplicate window observation rows
+try:
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "DELETE FROM road_window_observations WHERE id NOT IN "
+            "(SELECT max(id) FROM road_window_observations GROUP BY road_id, window_index)"
+        )
+except Exception as _e:
+    pass
 
 
 # ============================================================
@@ -632,6 +645,8 @@ def ingest_analysis(
             "inserted": 0
         }
 
+    created_count = 0
+    updated_count = 0
     rows = []
 
     affected_roads = {}
@@ -680,11 +695,27 @@ def ingest_analysis(
                 "equivalent_blocked_width_meters"
             ]
 
-        rows.append(
-            models.RoadWindowObservation(
-                **data
+        # Upsert: Check if observation for road_id and window_index already exists
+        existing_obs = (
+            db.query(models.RoadWindowObservation)
+            .filter(
+                models.RoadWindowObservation.road_id == data["road_id"],
+                models.RoadWindowObservation.window_index == data["window_index"],
             )
+            .first()
         )
+
+        if existing_obs:
+            for k, v in data.items():
+                setattr(existing_obs, k, v)
+            updated_count += 1
+            logger.info("Updated existing analysis window %s for %s", data["window_index"], data["road_id"])
+        else:
+            new_obs = models.RoadWindowObservation(**data)
+            db.add(new_obs)
+            rows.append(new_obs)
+            created_count += 1
+            logger.info("Inserted new analysis window %s for %s", data["window_index"], data["road_id"])
 
         previous = affected_roads.get(
             observation.road_id
@@ -722,8 +753,6 @@ def ingest_analysis(
             db.add(road)
 
     db.flush()
-
-    db.add_all(rows)
 
     # --------------------------------------------------------
     # Update current road status
@@ -809,7 +838,10 @@ def ingest_analysis(
     db.commit()
 
     return {
-        "inserted": len(rows),
+        "created": created_count,
+        "updated": updated_count,
+        "inserted": created_count,
+        "total": len(payload.observations),
         "updated_roads": len(
             affected_roads
         )
@@ -1007,14 +1039,462 @@ def list_recommendations(
 
 
 # ============================================================
+# CLOSED-LOOP ENHANCEMENT ENGINE INTEGRATION
+# ============================================================
+
+import sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+CORE_DIR = Path(__file__).resolve().parent.parent
+if str(CORE_DIR) not in sys.path:
+    sys.path.insert(0, str(CORE_DIR))
+
+from core.cause_classifier import ExplainableCauseClassifier
+from core.interventions import RecommendationDecisionEngine
+from core.outcomes import InterventionOutcomeService
+from core.simulation import InterventionSimulationEngine
+from core.alerts import AlertEngine
+from core.continuous_learning import ContinuousLearningRegistry
+
+cause_classifier = ExplainableCauseClassifier()
+rec_engine = RecommendationDecisionEngine()
+sim_engine = InterventionSimulationEngine()
+alert_engine = AlertEngine()
+learning_registry = ContinuousLearningRegistry()
+
+
+# ============================================================
+# OBSTRUCTION EVENTS ENDPOINTS
+# ============================================================
+
+@app.post("/events", response_model=schemas.ObstructionEventOut)
+def ingest_single_event(
+    event_in: schemas.ObstructionEventIn,
+    db: Session = Depends(get_db)
+):
+    road = db.get(models.Road, event_in.road_id)
+    if not road:
+        road = models.Road(id=event_in.road_id, name=event_in.road_id, latitude=0.0, longitude=0.0)
+        db.add(road)
+        db.flush()
+
+    existing = db.query(models.ObstructionEventModel).filter(
+        models.ObstructionEventModel.event_id == event_in.event_id
+    ).first()
+
+    data = event_in.model_dump()
+    metadata_val = data.pop("metadata", {})
+
+    if existing:
+        for k, v in data.items():
+            setattr(existing, k, v)
+        existing.event_metadata = metadata_val
+        db.commit()
+        db.refresh(existing)
+        db_record = existing
+        logger.info("Updated existing obstruction event %s on %s", existing.event_id, existing.road_id)
+    else:
+        new_event = models.ObstructionEventModel(**data, event_metadata=metadata_val)
+        db.add(new_event)
+        db.commit()
+        db.refresh(new_event)
+        db_record = new_event
+        logger.info("Created new obstruction event %s on %s", new_event.event_id, new_event.road_id)
+
+    # Check alert trigger
+    alert_info = alert_engine.check_obstruction_alert(
+        road_id=event_in.road_id,
+        event_id=event_in.event_id,
+        duration_sec=event_in.duration_sec,
+        road_space_loss_pct=event_in.road_space_loss_pct,
+        severity=event_in.severity,
+    )
+    if alert_info:
+        db.add(models.AlertModel(**alert_info))
+        db.commit()
+        logger.info("Alert triggered for %s: %s (%s)", event_in.road_id, alert_info["alert_type"], alert_info["severity"])
+
+    return schemas.ObstructionEventOut(
+        id=db_record.id,
+        event_id=db_record.event_id,
+        road_id=db_record.road_id,
+        camera_id=db_record.camera_id,
+        vehicle_id=db_record.vehicle_id,
+        vehicle_type=db_record.vehicle_type,
+        start_time=db_record.start_time,
+        end_time=db_record.end_time,
+        duration_sec=db_record.duration_sec,
+        location=db_record.location or [],
+        bbox=db_record.bbox,
+        road_width_m=db_record.road_width_m,
+        occupied_width_m=db_record.occupied_width_m,
+        road_space_loss_pct=db_record.road_space_loss_pct,
+        recurrence_score=db_record.recurrence_score,
+        cause=db_record.cause,
+        cause_confidence=db_record.cause_confidence,
+        cause_explanation=db_record.cause_explanation,
+        severity=db_record.severity,
+        status=db_record.status,
+        metadata=db_record.event_metadata or {},
+        created_at=db_record.created_at,
+    )
+
+
+@app.post("/events/bulk")
+def ingest_events_bulk(
+    payload: Union[schemas.ObstructionEventsBulkIn, List[schemas.ObstructionEventIn]],
+    db: Session = Depends(get_db)
+):
+    events_list = payload.events if isinstance(payload, schemas.ObstructionEventsBulkIn) else payload
+    count = 0
+    for ev in events_list:
+        ingest_single_event(ev, db)
+        count += 1
+    return {"inserted_or_updated": count}
+
+
+@app.get("/events", response_model=List[schemas.ObstructionEventOut])
+def list_events(
+    road_id: Optional[str] = Query(default=None),
+    cause: Optional[str] = Query(default=None),
+    severity: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, le=500),
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.ObstructionEventModel)
+    if road_id:
+        query = query.filter(models.ObstructionEventModel.road_id == road_id)
+    if cause:
+        query = query.filter(models.ObstructionEventModel.cause == cause)
+    if severity:
+        query = query.filter(models.ObstructionEventModel.severity == severity)
+    records = query.order_by(models.ObstructionEventModel.start_time.desc()).limit(limit).all()
+
+    return [
+        schemas.ObstructionEventOut(
+            id=r.id,
+            event_id=r.event_id,
+            road_id=r.road_id,
+            camera_id=r.camera_id,
+            vehicle_id=r.vehicle_id,
+            vehicle_type=r.vehicle_type,
+            start_time=r.start_time,
+            end_time=r.end_time,
+            duration_sec=r.duration_sec,
+            location=r.location or [],
+            bbox=r.bbox,
+            road_width_m=r.road_width_m,
+            occupied_width_m=r.occupied_width_m,
+            road_space_loss_pct=r.road_space_loss_pct,
+            recurrence_score=r.recurrence_score,
+            cause=r.cause,
+            cause_confidence=r.cause_confidence,
+            cause_explanation=r.cause_explanation,
+            severity=r.severity,
+            status=r.status,
+            metadata=r.event_metadata or {},
+            created_at=r.created_at,
+        )
+        for r in records
+    ]
+
+
+# ============================================================
+# EXPLAINABLE CAUSE PREDICTION
+# ============================================================
+
+@app.post("/causes/predict", response_model=schemas.CausePredictOut)
+def predict_cause(payload: schemas.CausePredictIn):
+    result = cause_classifier.classify(
+        vehicle_type=payload.vehicle_type,
+        duration_sec=payload.duration_sec,
+        road_space_loss_pct=payload.road_space_loss_pct,
+        timestamp=payload.timestamp,
+        in_waiting_zone=payload.in_waiting_zone,
+        cluster_count=payload.cluster_count,
+        recurrence_score=payload.recurrence_score,
+    )
+    logger.info("Cause predicted for %s: %s (confidence=%.2f, uncertainty=%s, model=%s)", payload.road_id, result.cause, result.confidence, result.uncertainty_status, result.model_version)
+    return schemas.CausePredictOut(**result.model_dump())
+
+
+# ============================================================
+# EXPLAINABLE RECOMMENDATIONS GENERATION
+# ============================================================
+
+@app.post("/recommendations/generate", response_model=schemas.RecommendationGenerateOut)
+def generate_recommendations(
+    payload: schemas.RecommendationGenerateIn,
+    db: Session = Depends(get_db)
+):
+    road = db.get(models.Road, payload.road_id)
+    if not road:
+        raise HTTPException(status_code=404, detail="Road not found")
+
+    cause = payload.cause or road.current_dominant_cause or "illegal_parking"
+    confidence = payload.cause_confidence or 0.75
+    loss_pct = payload.road_space_loss_pct if payload.road_space_loss_pct is not None else road.current_parked_space_pct
+
+    recs = rec_engine.generate_recommendations(
+        road_id=payload.road_id,
+        cause=cause,
+        cause_confidence=confidence,
+        road_space_loss_pct=loss_pct,
+        recurrence_score=0.6 if road.is_chronic else 0.3,
+        evidence_summary=f"Road {payload.road_id} observed with {loss_pct:.1f}% space loss.",
+    )
+
+    rec_dicts = [r.model_dump() for r in recs]
+
+    # Save to recommendations table
+    db.query(models.Recommendation).filter(models.Recommendation.road_id == payload.road_id).delete()
+    for r in recs:
+        db.add(models.Recommendation(
+            road_id=r.road_id,
+            cause=r.cause,
+            intervention=r.intervention,
+            expected_benefit_score=r.expected_benefit_score,
+            implementation_difficulty_score=r.implementation_difficulty_score,
+            priority_rank=r.priority_rank,
+            rationale=r.rationale,
+        ))
+    db.commit()
+    logger.info("Generated %d recommendation(s) for %s (cause=%s)", len(recs), payload.road_id, cause)
+
+    return schemas.RecommendationGenerateOut(
+        road_id=payload.road_id,
+        recommendations=rec_dicts,
+    )
+
+
+# ============================================================
+# HUMAN FEEDBACK (AUTHORITY IN THE LOOP)
+# ============================================================
+
+@app.post("/feedback", response_model=schemas.HumanFeedbackOut)
+def record_feedback(
+    feedback: schemas.HumanFeedbackIn,
+    db: Session = Depends(get_db)
+):
+    row = models.HumanFeedbackModel(
+        event_id=feedback.event_id,
+        road_id=feedback.road_id,
+        feedback_type=feedback.feedback_type,
+        original_value=feedback.original_value,
+        corrected_value=feedback.corrected_value,
+        accepted=1 if feedback.accepted else 0 if feedback.accepted is False else None,
+        notes=feedback.notes,
+        authority_user=feedback.authority_user,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    logger.info("Human feedback recorded for %s (type=%s, original=%s, corrected=%s)", feedback.road_id, feedback.feedback_type, feedback.original_value, feedback.corrected_value)
+    return schemas.HumanFeedbackOut(
+        id=row.id,
+        event_id=row.event_id,
+        road_id=row.road_id,
+        feedback_type=row.feedback_type,
+        original_value=row.original_value,
+        corrected_value=row.corrected_value,
+        accepted=bool(row.accepted) if row.accepted is not None else None,
+        notes=row.notes,
+        authority_user=row.authority_user,
+        created_at=row.created_at,
+    )
+
+
+@app.get("/feedback", response_model=List[schemas.HumanFeedbackOut])
+def list_feedback(
+    road_id: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    q = db.query(models.HumanFeedbackModel)
+    if road_id:
+        q = q.filter(models.HumanFeedbackModel.road_id == road_id)
+    records = q.order_by(models.HumanFeedbackModel.created_at.desc()).all()
+    return [
+        schemas.HumanFeedbackOut(
+            id=r.id,
+            event_id=r.event_id,
+            road_id=r.road_id,
+            feedback_type=r.feedback_type,
+            original_value=r.original_value,
+            corrected_value=r.corrected_value,
+            accepted=bool(r.accepted) if r.accepted is not None else None,
+            notes=r.notes,
+            authority_user=r.authority_user,
+            created_at=r.created_at,
+        )
+        for r in records
+    ]
+
+
+# ============================================================
+# INTERVENTION OUTCOME TRACKING
+# ============================================================
+
+@app.post("/interventions/outcome", response_model=schemas.InterventionOutcomeOut)
+def record_intervention_outcome(
+    payload: schemas.InterventionOutcomeIn,
+    db: Session = Depends(get_db)
+):
+    evaluated = InterventionOutcomeService.evaluate_outcome(payload)
+    row = models.InterventionOutcomeModel(
+        road_id=payload.road_id,
+        intervention_type=payload.intervention_type,
+        implementation_date=payload.implementation_date,
+        baseline_window_description=payload.baseline_window_description,
+        post_window_description=payload.post_window_description,
+        baseline_metrics=payload.baseline_metrics,
+        post_metrics=payload.post_metrics,
+        observed_change=evaluated.observed_change,
+        is_causal_claim=0,
+        notes=payload.notes,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    logger.info("Intervention outcome recorded for %s (%s, loss_delta=%.2f%%)", payload.road_id, payload.intervention_type, evaluated.observed_change.get("loss_pct_absolute_delta", 0.0))
+    evaluated.id = row.id
+    evaluated.recorded_at = row.created_at
+    return evaluated
+
+
+@app.get("/interventions/outcomes", response_model=List[schemas.InterventionOutcomeOut])
+def list_intervention_outcomes(
+    road_id: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    q = db.query(models.InterventionOutcomeModel)
+    if road_id:
+        q = q.filter(models.InterventionOutcomeModel.road_id == road_id)
+    records = q.order_by(models.InterventionOutcomeModel.created_at.desc()).all()
+    return [
+        schemas.InterventionOutcomeOut(
+            id=r.id,
+            road_id=r.road_id,
+            intervention_type=r.intervention_type,
+            implementation_date=r.implementation_date,
+            baseline_window_description=r.baseline_window_description,
+            post_window_description=r.post_window_description,
+            baseline_metrics=r.baseline_metrics,
+            post_metrics=r.post_metrics,
+            observed_change=r.observed_change,
+            is_causal_claim=bool(r.is_causal_claim),
+            notes=r.notes,
+            recorded_at=r.created_at,
+        )
+        for r in records
+    ]
+
+
+# ============================================================
+# INTERVENTION SIMULATION
+# ============================================================
+
+@app.post("/simulations/intervention", response_model=schemas.SimulationResponse)
+def simulate_intervention(
+    request: schemas.SimulationRequest,
+    db: Session = Depends(get_db)
+):
+    road = db.get(models.Road, request.road_id)
+    # Query real history if available in database
+    events = (
+        db.query(models.ObstructionEventModel)
+        .filter(models.ObstructionEventModel.road_id == request.road_id)
+        .all()
+    )
+    obs = (
+        db.query(models.RoadWindowObservation)
+        .filter(models.RoadWindowObservation.road_id == request.road_id)
+        .all()
+    )
+
+    if events:
+        baseline_loss = sum(e.road_space_loss_pct for e in events) / len(events)
+        baseline_dur = sum(e.duration_sec for e in events) / len(events)
+        hist_rec = sum(e.recurrence_score for e in events) / len(events)
+        data_source = "historical"
+    elif obs:
+        baseline_loss = sum(o.parked_space_pct for o in obs) / len(obs)
+        baseline_dur = 45.0
+        hist_rec = sum(1 for o in obs if o.parked_space_pct > 5.0) / len(obs)
+        data_source = "historical"
+    else:
+        baseline_loss = road.current_parked_space_pct if (road and road.current_parked_space_pct > 0) else 18.0
+        baseline_dur = 47.0
+        hist_rec = 0.7 if (road and road.is_chronic) else 0.4
+        data_source = "demo_default"
+
+    response = sim_engine.simulate(
+        request,
+        baseline_loss_pct=baseline_loss,
+        baseline_avg_duration_sec=baseline_dur,
+        historical_recurrence=hist_rec,
+    )
+    res_dict = response.model_dump()
+    res_dict["data_source"] = data_source
+    return schemas.SimulationResponse(**res_dict)
+
+
+# ============================================================
+# OPERATIONAL ALERTS
+# ============================================================
+
+@app.get("/alerts", response_model=List[schemas.AlertOut])
+def list_alerts(
+    road_id: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    q = db.query(models.AlertModel)
+    if road_id:
+        q = q.filter(models.AlertModel.road_id == road_id)
+    if status:
+        q = q.filter(models.AlertModel.status == status)
+    records = q.order_by(models.AlertModel.created_at.desc()).all()
+    return records
+
+
+@app.post("/alerts/{alert_id}/acknowledge", response_model=schemas.AlertOut)
+def acknowledge_alert(
+    alert_id: int,
+    ack: schemas.AlertAcknowledgeIn,
+    db: Session = Depends(get_db)
+):
+    alert = db.get(models.AlertModel, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert.status = "acknowledged"
+    alert.acknowledged_at = datetime.now(timezone.utc)
+    alert.acknowledged_by = ack.acknowledged_by
+    db.commit()
+    db.refresh(alert)
+    return alert
+
+
+# ============================================================
+# CONTINUOUS IMPROVEMENT & MODEL VERSIONS
+# ============================================================
+
+@app.get("/models/versions")
+def list_model_versions():
+    return {
+        "versions": learning_registry.versions,
+        "deployed_version": learning_registry.get_deployed_version(),
+    }
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
 @app.get("/")
 def root():
-
     return {
         "service": "LaneLogic API",
         "status": "ok",
-        "version": "2.0.0"
+        "version": "2.1.0"
     }

@@ -3844,27 +3844,29 @@ def analyze(
         )
 
         # ----------------------------------------------------
-        # Occupancy
+        # Occupancy (Image-space pixel area divided by ROI polygon pixel area)
         # ----------------------------------------------------
 
-        if road_area > 0:
+        road_poly_px_area = road_polygon.area if road_polygon else 0.0
+
+        if road_poly_px_area > 0:
 
             occupancy_pct = min(
-                100,
+                100.0,
                 (
                     total_area
-                    / road_area
+                    / road_poly_px_area
                 )
-                * 100,
+                * 100.0,
             )
 
             blocked_pct = min(
-                100,
+                100.0,
                 (
                     blocked_area
-                    / road_area
+                    / road_poly_px_area
                 )
-                * 100,
+                * 100.0,
             )
 
         else:
