@@ -614,11 +614,18 @@ def ingest_detections(
 # PERSON 2 ANALYSIS
 # ============================================================
 
+# @app.post("/analysis/bulk")
+# def ingest_analysis(
+#     payload: schemas.ObservationsBulkIn,
+#     db: Session = Depends(get_db)
+# ):
+
 @app.post("/analysis/bulk")
 def ingest_analysis(
     payload: schemas.ObservationsBulkIn,
     db: Session = Depends(get_db)
 ):
+    print("🔥 BACKEND RECEIVED DATA")
 
     if not payload.observations:
         return {
