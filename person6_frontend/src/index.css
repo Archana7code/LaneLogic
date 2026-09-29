@@ -1,62 +1,39 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
-
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --scan-line: rgba(255, 255, 255, 0.03);
-}
-
+html, body, #root { min-height: 100%; margin: 0; padding: 0; }
 body {
-  background-color: #f4f6fa;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  background-color: #060d1b;
+  background-image:
+    radial-gradient(1100px 480px at 85% -8%, rgba(45,219,160,.08), transparent),
+    linear-gradient(rgba(140,155,184,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(140,155,184,.035) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
+  background-attachment: fixed;
+  color: #e4eaf5;
+  font-family: Manrope, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
-html,
-body,
-#root {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
+.mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.eyebrow { font-family: "JetBrains Mono", monospace; font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: #8c9bb8; }
+.panel { background: linear-gradient(180deg, #0e1b34, #0b172c); border: 1px solid #1c3156; border-radius: 10px; }
+.hatch { background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,.22) 0 4px, transparent 4px 9px); }
+.lane-marks { background-image: repeating-linear-gradient(to bottom, rgba(56,198,244,.65) 0 7px, transparent 7px 14px); }
+@keyframes park-in { from { transform: translateX(110%); } to { transform: translateX(0); } }
+.park-in { animation: park-in .9s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .park-in, .pulse-dot { animation: none !important; } }
+*:focus-visible { outline: 2px solid #2ddba0; outline-offset: 2px; border-radius: 4px; }
+.leaflet-container { width: 100%; height: 100%; background: #0a1428; font-family: Manrope, system-ui, sans-serif; }
+.leaflet-control-zoom a { background: #0e1b34 !important; color: #e4eaf5 !important; border-color: #1c3156 !important; }
+.leaflet-control-attribution { background: rgba(6,13,27,.75) !important; color: #8c9bb8 !important; }
+.leaflet-control-attribution a { color: #8c9bb8 !important; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #2a4270; border-radius: 999px; }
+input[type=checkbox] { accent-color: #2ddba0; }
 
-.leaflet-container {
-  width: 100%;
-  height: 600px;
-}
-
-/* subtle scanline texture on the ops sidebar, echoes a monitoring console */
-.ops-rail {
-  background-image: repeating-linear-gradient(
-    to bottom,
-    var(--scan-line) 0px,
-    var(--scan-line) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-}
-
-@keyframes pulse-dot {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.82);
-  }
-}
-.pulse-dot {
-  animation: pulse-dot 1.8s ease-in-out infinite;
-}
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 999px;
-}
+/* Free OpenStreetMap tiles restyled dark to match the dashboard */
+.dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.92) saturate(.55); }
