@@ -1053,7 +1053,8 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-const API_BASE = "http://localhost:8000";
+// const API_BASE = "http://localhost:8000";
+const API_BASE = "https://lanelogic-backend.onrender.com";
 
 const ROAD_LOCATIONS = {
   ROAD_001: {

@@ -3,7 +3,8 @@
  * api.js - single place every page calls Person 3's FastAPI backend.
  * Base URL can be overridden with VITE_API_BASE in person6_frontend/.env
  */
-export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+// export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+export const API_BASE = import.meta.env.VITE_API_BASE || "https://lanelogic-backend.onrender.com";
 
 async function request(path, options) {
   const res = await fetch(`${API_BASE}${path}`, options);
