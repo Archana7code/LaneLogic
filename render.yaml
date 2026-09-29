@@ -1,0 +1,81 @@
+## LaneLogic - Render Deployment Blueprint
+## ==========================================
+## Defines two services:
+##   1. lanelogic-backend  - FastAPI / uvicorn web service
+##   2. lanelogic-frontend - React/Vite static site
+##
+## Usage:
+##   Push this file to your GitHub repo root, then connect the repo to
+##   Render via "New Blueprint Instance" in the Render dashboard.
+##   https://render.com/docs/infrastructure-as-code
+##
+## IMPORTANT: Set environment variables marked (secret) manually
+## in the Render dashboard — do NOT put actual secrets here.
+
+services:
+
+  # ===========================================================
+  # BACKEND - FastAPI
+  # ===========================================================
+  - type: web
+    name: lanelogic-backend
+    runtime: python
+    region: singapore   # change to your nearest region if desired
+
+    # Render will run from the repository root; we cd into person3_backend.
+    rootDir: person3_backend
+
+    # Install dependencies from person3_backend/requirements.txt
+    buildCommand: pip install -r requirements.txt
+
+    # Start uvicorn from the person3_backend/ working directory.
+    # main:app resolves because database.py, models.py, schemas.py are all
+    # siblings of main.py. The core/ imports work because main.py inserts
+    # the parent directory (repo root) into sys.path at line 1049-1051.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    # Health check endpoint (added in this deployment)
+    healthCheckPath: /health
+
+    envVars:
+      # CORS: restrict to the frontend URL after first deploy.
+      # During initial testing you may leave this unset (defaults to *).
+      - key: FRONTEND_ORIGIN
+        value: "*"   # UPDATE after frontend is deployed
+
+      # SQLite database path.
+      # Without a persistent disk the DB resets on redeploy — acceptable
+      # for the prototype. See DEPLOYMENT.md for the persistent disk option.
+      - key: DATABASE_URL
+        value: sqlite:///./lanelogic.db
+
+    # Optional: uncomment and configure a persistent disk to keep the
+    # SQLite database across redeploys (requires a paid Render plan).
+    # disk:
+    #   name: lanelogic-data
+    #   mountPath: /data
+    #   sizeGB: 1
+    # Then change DATABASE_URL to: sqlite:////data/lanelogic.db
+
+  # ===========================================================
+  # FRONTEND - React/Vite Static Site
+  # ===========================================================
+  - type: web
+    name: lanelogic-frontend
+    runtime: static
+
+    rootDir: person6_frontend
+
+    buildCommand: npm install && npm run build
+
+    staticPublishPath: dist
+
+    # React Router: rewrite all paths to index.html.
+    # The _redirects file in public/ handles this for Render Static Sites.
+    # (The _redirects file is already committed to the repo.)
+
+    envVars:
+      # Set this to the actual deployed backend URL after it is deployed.
+      # Example: https://lanelogic-backend.onrender.com
+      - key: VITE_API_URL
+        value: https://lanelogic-backend.onrender.com   # UPDATE with actual URL

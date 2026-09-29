@@ -149,3 +149,5 @@ person1_detection/dataset/
 analysis*.jsonl
 
 person6_frontend/public/
+# Exception: Render Static Site SPA rewrite rule must be committed
+!person6_frontend/public/_redirects

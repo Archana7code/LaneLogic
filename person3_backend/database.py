@@ -36,11 +36,18 @@ LaneLogic - PERSON 3: Backend/API
 database.py - SQLAlchemy engine + session setup.
 """
 
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-
-DATABASE_URL = "sqlite:///./lanelogic.db"
+# DATABASE_URL or SQLITE_PATH env vars let the deployment configure the database
+# path (e.g. a Render persistent disk mount at /data/lanelogic.db).
+# Falls back to ./lanelogic.db so local development is unaffected.
+_db_url = os.environ.get("DATABASE_URL") or os.environ.get("SQLITE_PATH")
+if _db_url:
+    DATABASE_URL = _db_url
+else:
+    DATABASE_URL = "sqlite:///./lanelogic.db"
 
 engine = create_engine(
     DATABASE_URL,

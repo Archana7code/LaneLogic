@@ -1,4 +1,14 @@
+# LaneLogic Backend - Production Requirements
+# ============================================================
+# Core API framework
 fastapi==0.114.2
 uvicorn[standard]==0.30.6
+
+# Database
 SQLAlchemy==2.0.35
+
+# Data validation (used by FastAPI + core/)
 pydantic==2.9.2
+
+# Required by uvicorn[standard] (websockets, httptools, etc.) - already pulled in
+# by the [standard] extra above, listed here for clarity

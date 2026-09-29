@@ -346,9 +346,14 @@ app = FastAPI(
 )
 
 
+import os
+
+_frontend_origin = os.environ.get("FRONTEND_ORIGIN", "*")
+_cors_origins = [_frontend_origin] if _frontend_origin != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -638,7 +643,7 @@ def ingest_analysis(
     payload: schemas.ObservationsBulkIn,
     db: Session = Depends(get_db)
 ):
-    print("🔥 BACKEND RECEIVED DATA")
+    print("BACKEND RECEIVED DATA")
 
     if not payload.observations:
         return {
@@ -1498,3 +1503,15 @@ def root():
         "status": "ok",
         "version": "2.1.0"
     }
+
+
+# ============================================================
+# HEALTH CHECK (deployment liveness probe)
+# ============================================================
+
+@app.get("/health")
+def health_check():
+    """Minimal liveness probe for Render and other deployment platforms.
+    Does NOT depend on the ML pipeline - just confirms the process is alive.
+    """
+    return {"status": "ok"}

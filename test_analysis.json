@@ -1,0 +1,22 @@
+{
+  "observations": [
+    {
+      "road_id": "ROAD_TEST",
+      "window_index": 0,
+      "window_start_seconds": 0,
+      "window_end_seconds": 60,
+      "vehicle_count": 5,
+      "vehicle_type_breakdown": {"car": 5},
+      "movement_state_breakdown": {"moving": 4, "parked": 1},
+      "road_length_meters": 60.0,
+      "road_width_meters": 7.0,
+      "occupancy_pct": 25.0,
+      "parked_space_pct": 5.0,
+      "parked_width_meters": 0.35,
+      "blocked_pct": 5.0,
+      "severity": "low",
+      "priority_score": 1,
+      "cause": "illegal_parking"
+    }
+  ]
+}
