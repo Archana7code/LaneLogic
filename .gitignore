@@ -147,3 +147,9 @@ person1_detection/dataset/
 
 # Analysis phase streams
 analysis*.jsonl
+
+# Allow LaneLogic frontend demo video
+!person6_frontend/public/media/videos/traffic3.mp4
+
+!person6_frontend/public/media/output/
+!person6_frontend/public/media/output/detections3.json

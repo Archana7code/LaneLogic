@@ -1,0 +1,14 @@
+{
+  "videos": [
+    "traffic1.mp4",
+    "traffic2.mp4",
+    "traffic3.mp4",
+    "traffic4.mp4"
+  ],
+  "outputs": [
+    "detections1.json",
+    "detections2.json",
+    "detections3.json",
+    "detections4.json"
+  ]
+}
