@@ -39,6 +39,10 @@ services:
     healthCheckPath: /health
 
     envVars:
+      # Render Python version override to fix pydantic-core wheel build issue
+      - key: PYTHON_VERSION
+        value: "3.12.11"
+
       # CORS: restrict to the frontend URL after first deploy.
       # During initial testing you may leave this unset (defaults to *).
       - key: FRONTEND_ORIGIN
