@@ -71,8 +71,11 @@ services:
     staticPublishPath: dist
 
     # React Router: rewrite all paths to index.html.
-    # The _redirects file in public/ handles this for Render Static Sites.
-    # (The _redirects file is already committed to the repo.)
+    # (Render SPA configuration)
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
 
     envVars:
       # Set this to the actual deployed backend URL after it is deployed.
