@@ -20,6 +20,7 @@ services:
   - type: web
     name: lanelogic-backend
     runtime: python
+    plan: free
     region: singapore   # change to your nearest region if desired
 
     # Render will run from the repository root; we cd into person3_backend.
