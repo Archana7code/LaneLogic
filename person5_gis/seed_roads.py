@@ -18,7 +18,8 @@ import requests
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api", default="http://localhost:8000")
+    # parser.add_argument("--api", default="http://localhost:8000")
+    parser.add_argument("--api", default="https://lanelogic-backend.onrender.com")
     parser.add_argument("--file", default="sample_roads.json")
     args = parser.parse_args()
 
