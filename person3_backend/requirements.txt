@@ -12,3 +12,4 @@ pydantic==2.9.2
 
 # Required by uvicorn[standard] (websockets, httptools, etc.) - already pulled in
 # by the [standard] extra above, listed here for clarity
+python-multipart==0.0.9

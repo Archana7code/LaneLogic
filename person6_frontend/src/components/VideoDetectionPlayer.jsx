@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Film, Upload, FileJson } from "lucide-react";
 import { Chip } from "./ui";
+import { API_BASE } from "../api";
 
 /*
  * Plays the source traffic video and draws Person 1's YOLO + ByteTrack boxes on top of it,
@@ -104,10 +105,31 @@ export default function VideoDetectionPlayer({ roadId }) {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  function pickVideo(e) {
+  async function pickVideo(e) {
     const f = e.target.files?.[0];
     if (!f) return;
-    setVideoUrl(URL.createObjectURL(f)); setVideoName(f.name);
+    setVideoUrl(URL.createObjectURL(f)); 
+    setVideoName(f.name);
+    setNote("Uploading and processing video...");
+
+    const formData = new FormData();
+    formData.append("video", f);
+    formData.append("road_id", roadId);
+
+    try {
+      const res = await fetch(`${API_BASE}/process-video`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        setNote("Pipeline processing... Phase outputs will appear automatically. Note: Box rendering requires detections.json which is generated at the end, or you can load it manually.");
+      } else {
+        setNote("Failed to start processing on backend.");
+      }
+    } catch (err) {
+      console.error(err);
+      setNote("Error starting pipeline on backend. Make sure the local backend is running (python start_backend.py).");
+    }
   }
   function pickJson(e) {
     const f = e.target.files?.[0];
@@ -163,3 +185,12 @@ export default function VideoDetectionPlayer({ roadId }) {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

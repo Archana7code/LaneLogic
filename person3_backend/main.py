@@ -299,8 +299,16 @@ from fastapi import (
     FastAPI,
     Depends,
     HTTPException,
-    Query
+    Query,
+    BackgroundTasks,
+    UploadFile,
+    File,
+    Form
 )
+import subprocess
+import sys
+import shutil
+import os
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -1514,4 +1522,75 @@ def health_check():
     """Minimal liveness probe for Render and other deployment platforms.
     Does NOT depend on the ML pipeline - just confirms the process is alive.
     """
-    return {"status": "ok"}
+    return {"status": "ok"}
+
+
+def run_pipeline_task(video_filename: str, road_id: str, base_dir: str):
+    p1_dir = os.path.join(base_dir, "person1_detection")
+    p2_dir = os.path.join(base_dir, "person2_analysis")
+    
+    det_out = os.path.join(p1_dir, "output", f"detections_{road_id}.json")
+    csv_out = os.path.join(p1_dir, "output", f"detections_{road_id}.csv")
+    det_stream = os.path.join(p1_dir, "output", f"detection_stream_{road_id}.jsonl")
+    
+    ana_out = os.path.join(p2_dir, f"analysis_{road_id}.json")
+    ana_stream = os.path.join(p2_dir, f"analysis_stream_{road_id}.jsonl")
+    
+    python_exe = sys.executable
+    
+    # 1. Start Person 2 streaming processor in background
+    cmd2 = [
+        python_exe, "main.py",
+        "--phase-input", det_stream,
+        "--roi", "roi_config.json",
+        "--output", ana_out,
+        "--phase-output", ana_stream,
+        "--road-id", road_id
+    ]
+    p2_process = subprocess.Popen(cmd2, cwd=p2_dir)
+    
+    # 2. Run Person 1 blocking
+    cmd1 = [
+        python_exe, "main.py",
+        "--source", f"videos/{video_filename}",
+        "--output", det_out,
+        "--csv", csv_out,
+        "--phase-seconds", "5",
+        "--phase-output", det_stream,
+        "--road-id", road_id,
+        "--clear-phase-output"
+    ]
+    subprocess.run(cmd1, cwd=p1_dir)
+    
+    # Terminate the streaming person2
+    p2_process.terminate()
+    
+    # 3. Run closed loop for final events and recommendations
+    cmd3 = [
+        python_exe, "run_closed_loop.py",
+        "--input", det_out,
+        "--api", "http://localhost:8000",
+        "--road-id", road_id
+    ]
+    subprocess.run(cmd3, cwd=base_dir)
+
+@app.post("/process-video")
+async def process_video(
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    road_id: str = Form(...)
+):
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    p1_dir = os.path.join(base_dir, "person1_detection")
+    
+    videos_dir = os.path.join(p1_dir, "videos")
+    os.makedirs(videos_dir, exist_ok=True)
+    os.makedirs(os.path.join(p1_dir, "output"), exist_ok=True)
+    
+    video_path = os.path.join(videos_dir, video.filename)
+    with open(video_path, "wb") as f:
+        shutil.copyfileobj(video.file, f)
+        
+    background_tasks.add_task(run_pipeline_task, video.filename, road_id, base_dir)
+    return {"message": "Pipeline started", "road_id": road_id, "video": video.filename}
+
