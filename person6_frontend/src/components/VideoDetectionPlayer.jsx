@@ -52,7 +52,8 @@ export default function VideoDetectionPlayer({ roadId }) {
     const n = numOf(roadId);
     const v = manifest.videos.find((x) => numOf(x) === n);
     const o = manifest.outputs.find((x) => /detection/i.test(x) && numOf(x) === n);
-    setVideoUrl(v ? `/media/videos/${encodeURIComponent(v)}` : null);
+    // Demo fallback: ROAD_001 → /videos/traffic1.mp4 (served from public/ on Render)
+    setVideoUrl(v ? `/media/videos/${encodeURIComponent(v)}` : (roadId === "ROAD_001" ? "/videos/traffic1.mp4" : null));
     setVideoName(v || "");
     clearDetections();
     if (o) {
