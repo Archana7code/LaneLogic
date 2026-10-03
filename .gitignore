@@ -148,6 +148,9 @@ person1_detection/dataset/
 # Analysis phase streams
 analysis*.jsonl
 
-person6_frontend/public/
+person6_frontend/public/*
 # Exception: Render Static Site SPA rewrite rule must be committed
-!person6_frontend/public/_redirects
+!person6_frontend/public/videos/
+!person6_frontend/public/videos/traffic1.mp4
+!person6_frontend/public/_redirects
+
