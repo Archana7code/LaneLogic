@@ -343,6 +343,16 @@ try:
 except Exception as _e:
     pass
 
+# ============================================================
+# DEMO DATA AUTO-SEEDING
+# Populates the database with synthetic demo data on first
+# startup (when the database is empty).  Subsequent restarts
+# detect existing Road rows and skip gracefully.
+# ============================================================
+
+from demo_data import run_demo_seed_if_empty
+run_demo_seed_if_empty()
+
 
 # ============================================================
 # FASTAPI
